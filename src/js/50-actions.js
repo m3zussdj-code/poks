@@ -363,6 +363,22 @@ PG.actions = (() => {
   }
 
   /** Zebranie jagód z krzewu podczas wędrówki. */
+  /**
+   * Koszt kopania z tekstu przycisku „Odkop nagrodę (10 PA)”.
+   * Czysta (testowana); null, gdy brak liczby PA w tekście.
+   */
+  function parseDigCost(text) {
+    const m = /(\d+)\s*PA\b/i.exec(pgText(String(text || ''), 60));
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  /** „Odkop nagrodę (10 PA)” — poszukiwacz skamielin; zawsze kopiemy. */
+  function digFossil() {
+    const ok = click('fossil-dig-button');
+    if (ok) PG.logger.action('fossil_dig', true);
+    return ok;
+  }
+
   function collectBerries() {
     const ok = click('berry-button');
     if (ok) PG.logger.action('collect_berries', true);
@@ -427,11 +443,11 @@ PG.actions = (() => {
     teamButtons, peekTeam, listLocations,
     parseTeamHpText, teamHpList, teamLowHp,
     parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
-    manageDialogKind, confirmManageDialog, dialogConfirmText,
+    manageDialogKind, confirmManageDialog, dialogConfirmText, parseDigCost,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
     evolveTeam, sellPokemon,
     walkLocation,
-    collectBerries, openQuestTab, isVisible,
+    digFossil, collectBerries, openQuestTab, isVisible,
     // questy — stuby do dalszej implementacji:
     turnInQuest: () => { PG.logger.action('turn_in', false, { stub: true }); return false; },
     claimRewards: () => { PG.logger.action('claim_rewards', false, { stub: true }); return false; },

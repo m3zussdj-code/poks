@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.8.0
+// @version      0.9.0
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.8.0',
+  version: '0.9.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -51,6 +51,7 @@ const PG = {
       heal: 1200,
       location: 1500,
       berry: 700,
+      fossil: 900,
       teamHeal: 1500,
       manage: 1500,       // ewolucja/sprzedaż rezerwy (klik ↔ dialog)
     },
@@ -322,6 +323,11 @@ PG.selectors = (() => {
     ],
     'berry-button': [
       { sel: 'button', re: /Zbierz jagody/ },
+    ],
+    // Poszukiwacz skamielin na mapie (snapshot 2026-09-29):
+    // „Odkop nagrodę (10 PA)” — ekran MA rolę result-actions jak wynik walki.
+    'fossil-dig-button': [
+      { sel: 'button', re: /Odkop nagrodę/i },
     ],
     'ball-card': [
       { sel: 'button', re: /Szansa złapania/i },
@@ -877,7 +883,7 @@ PG.sm = (() => {
 
   return {
     STATES: ['STOPPED', 'SCANNING', 'WANDER', 'ENCOUNTER', 'CATCH', 'BATTLE',
-      'BERRY', 'QUEST_TURNIN', 'HEAL', 'INVENTORY', 'SPECIAL_ENCOUNTER', 'NEEDS_REVIEW'],
+      'BERRY', 'FOSSIL', 'QUEST_TURNIN', 'HEAL', 'INVENTORY', 'SPECIAL_ENCOUNTER', 'NEEDS_REVIEW'],
     get state() { return state; },
     get paused() { return paused; },
     get reason() { return reason; },
@@ -1253,6 +1259,22 @@ PG.actions = (() => {
   }
 
   /** Zebranie jagód z krzewu podczas wędrówki. */
+  /**
+   * Koszt kopania z tekstu przycisku „Odkop nagrodę (10 PA)”.
+   * Czysta (testowana); null, gdy brak liczby PA w tekście.
+   */
+  function parseDigCost(text) {
+    const m = /(\d+)\s*PA\b/i.exec(pgText(String(text || ''), 60));
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  /** „Odkop nagrodę (10 PA)” — poszukiwacz skamielin; zawsze kopiemy. */
+  function digFossil() {
+    const ok = click('fossil-dig-button');
+    if (ok) PG.logger.action('fossil_dig', true);
+    return ok;
+  }
+
   function collectBerries() {
     const ok = click('berry-button');
     if (ok) PG.logger.action('collect_berries', true);
@@ -1317,11 +1339,11 @@ PG.actions = (() => {
     teamButtons, peekTeam, listLocations,
     parseTeamHpText, teamHpList, teamLowHp,
     parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
-    manageDialogKind, confirmManageDialog, dialogConfirmText,
+    manageDialogKind, confirmManageDialog, dialogConfirmText, parseDigCost,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
     evolveTeam, sellPokemon,
     walkLocation,
-    collectBerries, openQuestTab, isVisible,
+    digFossil, collectBerries, openQuestTab, isVisible,
     // questy — stuby do dalszej implementacji:
     turnInQuest: () => { PG.logger.action('turn_in', false, { stub: true }); return false; },
     claimRewards: () => { PG.logger.action('claim_rewards', false, { stub: true }); return false; },
@@ -1935,6 +1957,9 @@ PG.main = (() => {
     lastWalk: 0,
     lastLoc: 0,
     lastBerry: 0,
+    fossilTries: 0,
+    lastFossil: 0,
+    healNeed: 0,
   };
 
   const lastScreen = { value: null };
@@ -1958,6 +1983,8 @@ PG.main = (() => {
     sess.teamHealTries = 0;
     sess.manageEvolveTries = 0;
     sess.manageSellTries = 0;
+    sess.fossilTries = 0;
+    sess.healNeed = 0;
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
 
@@ -1991,6 +2018,9 @@ PG.main = (() => {
     if (PG.selectors.resolve('team-selection', { reportMiss: false })) return 'encounter';
     if (PG.selectors.resolve('berry-button', { reportMiss: false })) return 'berry_select';
     if (PG.actions.parseBalls().length > 0) return 'ball_select';
+    // Poszukiwacz skamielin MA rolę result-actions (jak wynik walki) —
+    // sprawdzamy PRZED battle-result, żeby nie pomylić ekranów.
+    if (PG.selectors.resolve('fossil-dig-button', { reportMiss: false })) return 'fossil';
     // Podsumowanie walki PRZED wykrywaniem walki: „Przejdź do końca walki"
     // zostaje w DOM także na ekranie wyniku (rola result-actions).
     if (PG.selectors.resolve('battle-result', { reportMiss: false })) return 'battle_result';
@@ -2056,6 +2086,7 @@ PG.main = (() => {
       // 1) Ekrany akcji — routowane natychmiast, bez przerwy na heal.
       if (screen === 'encounter') { sm.set('ENCOUNTER', 'spotkanie w dziczy'); return; }
       if (screen === 'berry_select') { sm.set('BERRY', 'krzew jagód'); return; }
+      if (screen === 'fossil') { sm.set('FOSSIL', 'poszukiwacz skamielin'); return; }
       if (screen === 'ball_select') { sm.set('CATCH', 'wybór piłki po walce'); return; }
       if (screen === 'battle') { sm.set('BATTLE', 'walka w toku'); return; }
 
@@ -2270,6 +2301,48 @@ PG.main = (() => {
       }
     });
 
+    // ── Poszukiwacz skamielin — zawsze odkopuj nagrodę (10 PA) ────────────
+    sm.register('FOSSIL', () => {
+      const screen = detectScreen();
+      if (screen !== 'fossil') {
+        sm.set('SCANNING', `ekran skamielin zmienił się (${screen})`);
+        return;
+      }
+      // Nieznany dialog po kliknięciu „Odkop” → snapshot od użytkownika.
+      const dlg = PG.actions.manageDialogKind();
+      if (dlg === 'other') {
+        sm.set('NEEDS_REVIEW', 'nieznany dialog na ekranie skamielin — podeślij snapshot');
+        return;
+      }
+      // PA < koszt → najpierw regeneracja (healNeed podnosi próg HEAL),
+      // potem wracamy tutaj i kopiemy. autoHeal off → zostawiamy wydarzenie.
+      const btn = PG.selectors.resolve('fossil-dig-button', { reportMiss: false });
+      const cost = (btn && PG.actions.parseDigCost(btn.textContent)) || 10;
+      const ap = PG.actions.parseAP();
+      if (ap && ap.current < cost) {
+        if (cfg.autoHeal) {
+          sess.healNeed = cost;
+          sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cost} (kopanie)`);
+        } else if (PG.actions.walkAgain()) {
+          sm.set('WANDER', 'za mało PA na kopanie, autoHeal off — pomijam skamieliny');
+        } else {
+          sm.set('NEEDS_REVIEW', 'brak „Wędruj ponownie” przy pomijanych skamielinach');
+        }
+        return;
+      }
+      const now = Date.now();
+      if (now - sess.lastFossil < jrand(cfg.cooldowns.fossil)) return;
+      sess.lastFossil = now;
+      sess.fossilTries += 1;
+      if (sess.fossilTries > 5) {
+        sm.set('NEEDS_REVIEW', '„Odkop nagrodę” nie przechodzi (5 prób) — snapshot ekranu');
+        return;
+      }
+      if (!PG.actions.digFossil()) {
+        sm.set('NEEDS_REVIEW', 'brak przycisku „Odkop nagrodę”');
+      }
+    });
+
     sm.register('HEAL', () => {
       // 1) Otwarty dialog „Zregenerować punkty akcji?” → klik „Regeneruj”
       //    w jego obrębie; potem czekamy (cooldown + ticki), aż PA wzrośnie.
@@ -2296,8 +2369,11 @@ PG.main = (() => {
         sm.set('NEEDS_REVIEW', 'nie mogę odczytać poziomu PUNKTÓW AKCJI ze strony');
         return;
       }
-      if (ap.current >= cfg.healBelow) {
+      // Próg: domyślny healBelow lub podniesiony przez FOSSIL (healNeed = koszt kopania).
+      const need = Math.max(cfg.healBelow, sess.healNeed || 0);
+      if (ap.current >= need) {
         sess.healTries = 0;
+        sess.healNeed = 0;
         sm.set('SCANNING', `PA odnowione: ${ap.current}/${ap.total}`);
         return;
       }

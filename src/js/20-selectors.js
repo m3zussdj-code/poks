@@ -74,6 +74,11 @@ PG.selectors = (() => {
     'berry-button': [
       { sel: 'button', re: /Zbierz jagody/ },
     ],
+    // Poszukiwacz skamielin na mapie (snapshot 2026-09-29):
+    // „Odkop nagrodę (10 PA)” — ekran MA rolę result-actions jak wynik walki.
+    'fossil-dig-button': [
+      { sel: 'button', re: /Odkop nagrodę/i },
+    ],
     'ball-card': [
       { sel: 'button', re: /Szansa złapania/i },
     ],

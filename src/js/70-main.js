@@ -36,6 +36,9 @@ PG.main = (() => {
     lastWalk: 0,
     lastLoc: 0,
     lastBerry: 0,
+    fossilTries: 0,
+    lastFossil: 0,
+    healNeed: 0,
   };
 
   const lastScreen = { value: null };
@@ -59,6 +62,8 @@ PG.main = (() => {
     sess.teamHealTries = 0;
     sess.manageEvolveTries = 0;
     sess.manageSellTries = 0;
+    sess.fossilTries = 0;
+    sess.healNeed = 0;
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
 
@@ -92,6 +97,9 @@ PG.main = (() => {
     if (PG.selectors.resolve('team-selection', { reportMiss: false })) return 'encounter';
     if (PG.selectors.resolve('berry-button', { reportMiss: false })) return 'berry_select';
     if (PG.actions.parseBalls().length > 0) return 'ball_select';
+    // Poszukiwacz skamielin MA rolę result-actions (jak wynik walki) —
+    // sprawdzamy PRZED battle-result, żeby nie pomylić ekranów.
+    if (PG.selectors.resolve('fossil-dig-button', { reportMiss: false })) return 'fossil';
     // Podsumowanie walki PRZED wykrywaniem walki: „Przejdź do końca walki"
     // zostaje w DOM także na ekranie wyniku (rola result-actions).
     if (PG.selectors.resolve('battle-result', { reportMiss: false })) return 'battle_result';
@@ -157,6 +165,7 @@ PG.main = (() => {
       // 1) Ekrany akcji — routowane natychmiast, bez przerwy na heal.
       if (screen === 'encounter') { sm.set('ENCOUNTER', 'spotkanie w dziczy'); return; }
       if (screen === 'berry_select') { sm.set('BERRY', 'krzew jagód'); return; }
+      if (screen === 'fossil') { sm.set('FOSSIL', 'poszukiwacz skamielin'); return; }
       if (screen === 'ball_select') { sm.set('CATCH', 'wybór piłki po walce'); return; }
       if (screen === 'battle') { sm.set('BATTLE', 'walka w toku'); return; }
 
@@ -371,6 +380,48 @@ PG.main = (() => {
       }
     });
 
+    // ── Poszukiwacz skamielin — zawsze odkopuj nagrodę (10 PA) ────────────
+    sm.register('FOSSIL', () => {
+      const screen = detectScreen();
+      if (screen !== 'fossil') {
+        sm.set('SCANNING', `ekran skamielin zmienił się (${screen})`);
+        return;
+      }
+      // Nieznany dialog po kliknięciu „Odkop” → snapshot od użytkownika.
+      const dlg = PG.actions.manageDialogKind();
+      if (dlg === 'other') {
+        sm.set('NEEDS_REVIEW', 'nieznany dialog na ekranie skamielin — podeślij snapshot');
+        return;
+      }
+      // PA < koszt → najpierw regeneracja (healNeed podnosi próg HEAL),
+      // potem wracamy tutaj i kopiemy. autoHeal off → zostawiamy wydarzenie.
+      const btn = PG.selectors.resolve('fossil-dig-button', { reportMiss: false });
+      const cost = (btn && PG.actions.parseDigCost(btn.textContent)) || 10;
+      const ap = PG.actions.parseAP();
+      if (ap && ap.current < cost) {
+        if (cfg.autoHeal) {
+          sess.healNeed = cost;
+          sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cost} (kopanie)`);
+        } else if (PG.actions.walkAgain()) {
+          sm.set('WANDER', 'za mało PA na kopanie, autoHeal off — pomijam skamieliny');
+        } else {
+          sm.set('NEEDS_REVIEW', 'brak „Wędruj ponownie” przy pomijanych skamielinach');
+        }
+        return;
+      }
+      const now = Date.now();
+      if (now - sess.lastFossil < jrand(cfg.cooldowns.fossil)) return;
+      sess.lastFossil = now;
+      sess.fossilTries += 1;
+      if (sess.fossilTries > 5) {
+        sm.set('NEEDS_REVIEW', '„Odkop nagrodę” nie przechodzi (5 prób) — snapshot ekranu');
+        return;
+      }
+      if (!PG.actions.digFossil()) {
+        sm.set('NEEDS_REVIEW', 'brak przycisku „Odkop nagrodę”');
+      }
+    });
+
     sm.register('HEAL', () => {
       // 1) Otwarty dialog „Zregenerować punkty akcji?” → klik „Regeneruj”
       //    w jego obrębie; potem czekamy (cooldown + ticki), aż PA wzrośnie.
@@ -397,8 +448,11 @@ PG.main = (() => {
         sm.set('NEEDS_REVIEW', 'nie mogę odczytać poziomu PUNKTÓW AKCJI ze strony');
         return;
       }
-      if (ap.current >= cfg.healBelow) {
+      // Próg: domyślny healBelow lub podniesiony przez FOSSIL (healNeed = koszt kopania).
+      const need = Math.max(cfg.healBelow, sess.healNeed || 0);
+      if (ap.current >= need) {
         sess.healTries = 0;
+        sess.healNeed = 0;
         sm.set('SCANNING', `PA odnowione: ${ap.current}/${ap.total}`);
         return;
       }

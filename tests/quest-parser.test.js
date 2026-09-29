@@ -218,6 +218,8 @@ eq(parseReserve('Szybka sprzedaż pokemonów'), null, ' bez licznika → null');
 eq(PG.actions.dialogConfirmText('ap'), 'Regeneruj', ' dialog PA → „Regeneruj”');
 eq(PG.actions.dialogConfirmText('evolve'), 'Ewoluuj wszystkie', ' dialog ewolucji');
 eq(PG.actions.dialogConfirmText('sell'), 'Sprzedaj', ' dialog sprzedaży');
+eq(PG.actions.parseDigCost('Odkop nagrodę (10 PA)'), 10, ' koszt kopania z przycisku');
+eq(PG.actions.parseDigCost('Wróć do mapy'), null, ' brak PA w tekście → null');
 assert(
   parseReserve('60/60Szybka sprzedaż pokemonów').current
     >= parseReserve('60/60Szybka sprzedaż pokemonów').max,

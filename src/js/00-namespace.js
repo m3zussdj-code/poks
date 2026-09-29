@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.8.0',
+  version: '0.9.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -33,6 +33,7 @@ const PG = {
       heal: 1200,
       location: 1500,
       berry: 700,
+      fossil: 900,
       teamHeal: 1500,
       manage: 1500,       // ewolucja/sprzedaż rezerwy (klik ↔ dialog)
     },

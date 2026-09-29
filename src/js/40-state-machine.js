@@ -109,7 +109,7 @@ PG.sm = (() => {
 
   return {
     STATES: ['STOPPED', 'SCANNING', 'WANDER', 'ENCOUNTER', 'CATCH', 'BATTLE',
-      'BERRY', 'QUEST_TURNIN', 'HEAL', 'INVENTORY', 'SPECIAL_ENCOUNTER', 'NEEDS_REVIEW'],
+      'BERRY', 'FOSSIL', 'QUEST_TURNIN', 'HEAL', 'INVENTORY', 'SPECIAL_ENCOUNTER', 'NEEDS_REVIEW'],
     get state() { return state; },
     get paused() { return paused; },
     get reason() { return reason; },
