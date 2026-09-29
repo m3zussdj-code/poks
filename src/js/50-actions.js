@@ -261,6 +261,95 @@ PG.actions = (() => {
     return true;
   }
 
+  // ── ewolucja / sprzedaż rezerwy (szybkie akcje + dialogi potwierdzania) ──
+
+  /** Czysty: „38Ewoluuj wszystkie gotowe…” → 38; brak liczby → 0. */
+  function parseEvolveCount(text) {
+    const m = /^(\d+)/.exec(pgText(text, 60));
+    return m ? +m[1] : 0;
+  }
+
+  /** Czysty: „60/60Szybka sprzedaż…” → {current, max}; brak pary → null. */
+  function parseReserve(text) {
+    const m = /(\d+)\s*\/\s*(\d+)/.exec(pgText(text, 40));
+    return m ? { current: +m[1], max: +m[2] } : null;
+  }
+
+  /** Ile Pokémonów gotowych do ewolucji (licznik na przycisku szybkiej akcji). */
+  function evolveReadyCount() {
+    const el = PG.selectors.resolve('evolve-all-button', { reportMiss: false });
+    return el ? parseEvolveCount(el.textContent) : 0;
+  }
+
+  /** Zapełnienie rezerwy z etykiety „X/Y Szybka sprzedaż pokemonów”. */
+  function reserveInfo() {
+    const el = PG.selectors.resolve('quick-sell-button', { reportMiss: false });
+    return el ? parseReserve(el.textContent) : null;
+  }
+
+  function reserveFull() {
+    const r = reserveInfo();
+    return !!r && r.max > 0 && r.current >= r.max;
+  }
+
+  /**
+   * Jaki dialog zarządzania jest otwarty: 'evolve' | 'sell' | 'other' | null.
+   * Rozróżniamy po tytule z snapshotu: „Ewoluować wszystkie?” /
+   * „Sprzedać Pokemony z rezerwy?”. Inny widoczny dialog → 'other'.
+   */
+  function manageDialogKind() {
+    let other = false;
+    for (const d of document.querySelectorAll('[role="dialog"][data-open]')) {
+      if (!isVisible(d)) continue;
+      const t = pgText(d.textContent, 400);
+      if (/Ewoluować wszystkie/i.test(t)) return 'evolve';
+      if (/Sprzedać Pokemony z rezerwy/i.test(t)) return 'sell';
+      other = true;
+    }
+    return other ? 'other' : null;
+  }
+
+  /**
+   * Klik w potwierdzenie OTWARTEGO dialogu — szukamy TYLKO w jego
+   * obrębie („Ewoluuj wszystkie” z dialogu ≠ przycisk szybkiej akcji
+   * „38Ewoluuj wszystkie gotowe…”; „Sprzedaj” ≠ „Szybka sprzedaż…”).
+   */
+  function confirmManageDialog(kind) {
+    const label = kind === 'evolve' ? /^Ewoluuj wszystkie$/ : /^Sprzedaj$/;
+    for (const d of document.querySelectorAll('[role="dialog"][data-open]')) {
+      if (!isVisible(d)) continue;
+      const btn = [...d.querySelectorAll('button')]
+        .find((b) => label.test(pgText(b.textContent, 60)));
+      if (!btn) continue;
+      if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') {
+        PG.logger.push('action_disabled', { name: `dialog_${kind}` });
+        return false;
+      }
+      noteAction();
+      btn.click();
+      PG.logger.action('dialog_confirm', true, { kind });
+      return true;
+    }
+    PG.logger.action('dialog_confirm', false, { kind, reason: 'no_button' });
+    return false;
+  }
+
+  /** Szybka akcja „38Ewoluuj wszystkie gotowe Pokemony”. */
+  function evolveTeam() {
+    const ready = evolveReadyCount();
+    const ok = click('evolve-all-button');
+    PG.logger.action('evolve_all', ok, { ready });
+    return ok;
+  }
+
+  /** Szybka akcja „60/60Szybka sprzedaż pokemonów”. */
+  function sellPokemon() {
+    const r = reserveInfo();
+    const ok = click('quick-sell-button');
+    PG.logger.action('quick_sell', ok, r || {});
+    return ok;
+  }
+
   /** Zebranie jagód z krzewu podczas wędrówki. */
   function collectBerries() {
     const ok = click('berry-button');
@@ -325,12 +414,13 @@ PG.actions = (() => {
     parseAP, parseBalls, isShinyEncounter, ballCatalog,
     teamButtons, peekTeam, listLocations,
     parseTeamHpText, teamHpList, teamLowHp,
+    parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
+    manageDialogKind, confirmManageDialog,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
+    evolveTeam, sellPokemon,
     walkLocation,
     collectBerries, openQuestTab, isVisible,
-    // stuby do wypełnienia (ekwipunek, questy):
-    evolveTeam: () => { PG.logger.action('evolve', false, { stub: true }); return false; },
-    sellPokemon: () => { PG.logger.action('sell', false, { stub: true }); return false; },
+    // questy — stuby do dalszej implementacji:
     turnInQuest: () => { PG.logger.action('turn_in', false, { stub: true }); return false; },
     claimRewards: () => { PG.logger.action('claim_rewards', false, { stub: true }); return false; },
     /** Zgłoś specjalne spotkanie (shiny/tutor) → NEEDS_REVIEW, jeśli włączone. */

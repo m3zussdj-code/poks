@@ -25,8 +25,11 @@ PG.main = (() => {
     throws: 0,
     healTries: 0,
     teamHealTries: 0,
+    manageEvolveTries: 0,
+    manageSellTries: 0,
     lastTeamClick: 0,
     lastTeamHeal: 0,
+    lastManage: 0,
     lastThrow: 0,
     lastSkip: 0,
     lastHeal: 0,
@@ -54,6 +57,8 @@ PG.main = (() => {
     sess.berryTries = 0;
     sess.throws = 0;
     sess.teamHealTries = 0;
+    sess.manageEvolveTries = 0;
+    sess.manageSellTries = 0;
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
 
@@ -110,6 +115,9 @@ PG.main = (() => {
           saved.balls = { ...PG.config.balls, ...saved.balls };
         }
         const isOldSave = !saved.cooldowns; // brak cooldownów = zapis z < v0.4.0
+        // Zapis z < v0.7.0: autoManage był martwym stubem — szanowanie
+        // zapisanego „false” zablokowałoby nową funkcję. Migracja: włącz.
+        const preManageSave = !(saved.cooldowns && 'manage' in saved.cooldowns);
         if (saved.cooldowns) {
           saved.cooldowns = { ...PG.config.cooldowns, ...saved.cooldowns };
         }
@@ -118,6 +126,7 @@ PG.main = (() => {
           // Stary zapis miał tickMs1500 — wymuszamy nowy, szybszy tick.
           PG.config.tickMs = 500;
         }
+        if (preManageSave) PG.config.autoManage = true;
       }
     } catch (_) { /* uszkodzony JSON → domyślne */ }
   }
@@ -155,6 +164,15 @@ PG.main = (() => {
       const ap = PG.actions.parseAP();
       if (cfg.autoHeal && ap && ap.current < cfg.healBelow) {
         sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);
+        return;
+      }
+
+      // 2b) Rezerwa pełna → ewoluuj (dialogi) i sprzedaj (dialog).
+      //     Liczniki prób świeże przy każdym wejściu (ack = nowa szansa).
+      if (cfg.autoManage && PG.actions.reserveFull()) {
+        sess.manageEvolveTries = 0;
+        sess.manageSellTries = 0;
+        sm.set('INVENTORY', 'rezerwa pełna — ewolucja/sprzedaż');
         return;
       }
 
@@ -198,6 +216,14 @@ PG.main = (() => {
       const ap = PG.actions.parseAP();
       if (cfg.autoHeal && ap && ap.current < cfg.healBelow) {
         sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);
+        return;
+      }
+
+      // Rezerwa pełna → przerwij wędrówkę na ewolucję/sprzedaż.
+      if (cfg.autoManage && PG.actions.reserveFull()) {
+        sess.manageEvolveTries = 0;
+        sess.manageSellTries = 0;
+        sm.set('INVENTORY', 'rezerwa pełna — ewolucja/sprzedaż');
         return;
       }
 
@@ -382,8 +408,77 @@ PG.main = (() => {
         sm.set('NEEDS_REVIEW', 'zarządzanie ekwipunkiem, autoManage wyłączone');
         return;
       }
-      PG.actions.evolveTeam();
-      PG.actions.sellPokemon();
+      // Ekrany akcji (walka/łapanie/jagody) mają priorytet — oddajemy
+      // sterowanie SCANNING, który je obsłuży i tu wróci.
+      const scr = detectScreen();
+      if (scr === 'encounter' || scr === 'berry_select'
+          || scr === 'ball_select' || scr === 'battle') {
+        sm.set('SCANNING', `ekran akcji podczas zarządzania (${scr})`);
+        return;
+      }
+      const now = Date.now();
+      const wait = () => {
+        if (now - sess.lastManage < jrand(cfg.cooldowns.manage)) return true;
+        sess.lastManage = now;
+        return false;
+      };
+
+      // 1) Otwarty dialog → potwierdź (szukamy przycisku w jego obrębie).
+      const dlg = PG.actions.manageDialogKind();
+      if (dlg === 'other') {
+        sm.set('NEEDS_REVIEW', 'nieznany dialog na ekranie — ewolucja/sprzedaż wstrzymane');
+        return;
+      }
+      if (dlg) {
+        if (wait()) return;
+        const key = dlg === 'evolve' ? 'manageEvolveTries' : 'manageSellTries';
+        sess[key] += 1;
+        if (sess[key] > 6) {
+          sm.set('NEEDS_REVIEW', `dialog ${dlg}: potwierdzenie nie zamyka okna (7 prób)`);
+          return;
+        }
+        if (!PG.actions.confirmManageDialog(dlg)) {
+          sm.set('NEEDS_REVIEW', `brak przycisku potwierdzenia w dialogu (${dlg})`);
+        }
+        return;
+      }
+
+      // 2) Jeszcze są gotowe ewolucje → „Ewoluuj wszystkie gotowe”
+      //    (gra otworzy dialog → potwierdzenie w kroku 1). Kolejna runda
+      //    dopiero gdy licznik znów > 0 — stąd max 7 kliknięć.
+      const ready = PG.actions.evolveReadyCount();
+      if (ready > 0) {
+        if (sess.manageEvolveTries > 6) {
+          sm.set('NEEDS_REVIEW', `ewolucja nie ubywa (7 prób, gotowe: ${ready})`);
+          return;
+        }
+        if (wait()) return;
+        sess.manageEvolveTries += 1;
+        if (!PG.actions.evolveTeam()) {
+          sm.set('NEEDS_REVIEW', 'brak przycisku „Ewoluuj wszystkie gotowe”');
+        }
+        return;
+      }
+      sess.manageEvolveTries = 0; // nic do ewolucji → licznik czysty
+
+      // 3) Rezerwa pełna → „Szybka sprzedaż” → dialog „Sprzedaj” (krok 1).
+      if (PG.actions.reserveFull()) {
+        if (sess.manageSellTries > 6) {
+          sm.set('NEEDS_REVIEW', 'sprzedaż nie zmniejsza rezerwy (7 prób)');
+          return;
+        }
+        if (wait()) return;
+        sess.manageSellTries += 1;
+        if (!PG.actions.sellPokemon()) {
+          sm.set('NEEDS_REVIEW', 'brak przycisku „Szybka sprzedaż pokemonów”');
+        }
+        return;
+      }
+      sess.manageSellTries = 0;
+
+      // 4) Ewolucje gotowe, rezerwa niepełna → wszystko zrobione.
+      sess.manageEvolveTries = 0;
+      sm.set('SCANNING', 'ewolucja/sprzedaż zakończona');
     });
 
     sm.register('SPECIAL_ENCOUNTER', () => {

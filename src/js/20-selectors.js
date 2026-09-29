@@ -30,6 +30,7 @@ PG.selectors = (() => {
     'evolve-all-button': [
       { sel: 'button', re: /Ewoluuj wszystkie gotowe/i },
     ],
+    // „60/60Szybka sprzedaż pokemonów” — licznik rezerwy w etykiecie.
     'quick-sell-button': [
       { sel: 'button', re: /Szybka sprzedaż pokemonów/i },
     ],

@@ -207,6 +207,25 @@ assert(hp('Niezdolny Lv. 130 3910/3910 x 0/3050 x 100/100').ratio * 100 < 50, ' 
 assert(!(hp('Lv. 130 206/3910 x 1788/2233 x 48/100').ratio * 100 < 50), ' 1788/2233 ≥ 50%');
 assert(!(hp('Lv. 64 1082/1930 x 3023/3205 x 100/100').ratio * 100 < 50), ' 3023/3205 ≥ 50%');
 
+console.log('8. parseEvolveCount() / parseReserve() — liczniki szybkich akcji');
+const { parseEvolveCount, parseReserve } = PG.actions;
+eq(parseEvolveCount('38Ewoluuj wszystkie gotowe Pokemony'), 38, ' licznik ewolucji 38');
+eq(parseEvolveCount('105Ewoluuj wszystkie gotowe Pokemony'), 105, ' licznik 3-cyfrowy');
+eq(parseEvolveCount('Ewoluuj wszystkie gotowe Pokemony'), 0, ' brak liczby → 0');
+eq(parseReserve('60/60Szybka sprzedaż pokemonów'), { current: 60, max: 60 }, ' rezerwa 60/60');
+eq(parseReserve('43/60Szybka sprzedaż pokemonów'), { current: 43, max: 60 }, ' rezerwa 43/60');
+eq(parseReserve('Szybka sprzedaż pokemonów'), null, ' bez licznika → null');
+assert(
+  parseReserve('60/60Szybka sprzedaż pokemonów').current
+    >= parseReserve('60/60Szybka sprzedaż pokemonów').max,
+  ' 60/60 = rezerwa pełna'
+);
+assert(
+  !(parseReserve('43/60Szybka sprzedaż pokemonów').current
+    >= parseReserve('43/60Szybka sprzedaż pokemonów').max),
+  ' 43/60 = rezerwa niepełna'
+);
+
 // ── podsumowanie ────────────────────────────────────────────────────────────
 console.log(`\n${failures.length === 0 ? '✅' : '❌'} Wszystkie testy: ${passed} OK, ${failures.length} błędów`);
 process.exit(failures.length === 0 ? 0 : 1);

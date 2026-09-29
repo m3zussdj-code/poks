@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.6.0',
+  version: '0.7.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -34,6 +34,7 @@ const PG = {
       location: 1500,
       berry: 700,
       teamHeal: 1500,
+      manage: 1500,       // ewolucja/sprzedaż rezerwy (klik ↔ dialog)
     },
 
     // przełączniki widoczne w panelu:
@@ -44,7 +45,7 @@ const PG = {
     autoQuests: true,      // skan i rozliczanie questów
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
     autoHealTeam: true,    // lecz HP pokemonów (< healHpBelow%) — ekran spotkania
-    autoManage: false,     // ewolucja + sprzedaż — wymaga potwierdzenia UI
+    autoManage: true,     // rezerwa pełna → ewoluuj (dialogi) → sprzedaj (dialog)
     autoResume: true,      // wznowienie działania po odświeżeniu strony
     questLocation: true,   // cel z questa WALK_IN steruje wyborem lokacji
     pauseOnSpecial: true,  // shiny / tutor → zatrzymaj się i pokaż NEEDS_REVIEW
