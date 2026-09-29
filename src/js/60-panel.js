@@ -33,6 +33,7 @@ PG.panel = (() => {
     ['autoWalk', 'Wędrówki'],
     ['autoCatch', 'Łapanie po walce'],
     ['autoBerries', 'Zbieranie jagód'],
+    ['autoOpenBag', 'Otwórz podejrzany plecak'],
     ['autoSkipBattle', 'Pomiń animację walki'],
     ['autoQuests', 'Questy'],
     ['autoHeal', 'Picie drinków'],

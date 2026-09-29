@@ -77,6 +77,12 @@ PG.selectors = (() => {
     'berry-button': [
       { sel: 'button', re: /Zbierz jagody/ },
     ],
+    // „Podejrzany plecak” na szlaku (snapshot 2026-09-29, /mapa):
+    // dialog „…może być pułapką” z opcją Otwórz plecak / Wróć do mapy —
+    // otwieramy ZAWSZE (autoOpenBag).
+    'open-bag-button': [
+      { sel: 'button', re: /^Otwórz plecak$/ },
+    ],
     // Poszukiwacz skamielin na mapie (snapshot 2026-09-29):
     // „Odkop nagrodę (10 PA)” — ekran MA rolę result-actions jak wynik walki.
     'fossil-dig-button': [

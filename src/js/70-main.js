@@ -34,6 +34,7 @@ PG.main = (() => {
     lastSkip: 0,
     lastHeal: 0,
     lastWalk: 0,
+    lastBagClick: 0,
     lastLoc: 0,
     lastBerry: 0,
     fossilTries: 0,
@@ -248,6 +249,16 @@ PG.main = (() => {
         sm.set('SCANNING', `ekran zmienił się po wędrówce (${screen})`);
         return;
       }
+
+      // ── Podejrzany plecak: „Otwórz plecak” ZAWSZE — priorytet nad resztą
+      // (HEAL/quest/wędrówka poczekają jeden tick). 2,5 s oddechu, gdyby
+      // po otwarciu został dialog wyniku.
+      if (cfg.autoOpenBag && Date.now() - sess.lastBagClick > 2500
+          && PG.actions.openBag()) {
+        sess.lastBagClick = Date.now();
+        return;
+      }
+
       const ap = PG.actions.parseAP();
       if (cfg.autoHeal && ap && ap.current < cfg.healBelow) {
         sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);

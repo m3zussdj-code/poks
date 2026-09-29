@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.10.3
+// @version      0.10.5
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.10.3',
+  version: '0.10.5',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -61,6 +61,7 @@ const PG = {
     autoWalk: true,        // wędrówki ("Wędruj ponownie")
     autoCatch: true,       // rzut piłką po wygranej walce
     autoBerries: true,     // „Zbierz jagody” przy krzewie podczas wędrówki
+    autoOpenBag: true,     // „Podejrzany plecak” — zawsze „Otwórz plecak”
     autoSkipBattle: true,  // klikaj "Przejdź do końca walki"
     autoQuests: true,      // skan i rozliczanie questów
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
@@ -329,6 +330,12 @@ PG.selectors = (() => {
     ],
     'berry-button': [
       { sel: 'button', re: /Zbierz jagody/ },
+    ],
+    // „Podejrzany plecak” na szlaku (snapshot 2026-09-29, /mapa):
+    // dialog „…może być pułapką” z opcją Otwórz plecak / Wróć do mapy —
+    // otwieramy ZAWSZE (autoOpenBag).
+    'open-bag-button': [
+      { sel: 'button', re: /^Otwórz plecak$/ },
     ],
     // Poszukiwacz skamielin na mapie (snapshot 2026-09-29):
     // „Odkop nagrodę (10 PA)” — ekran MA rolę result-actions jak wynik walki.
@@ -1182,6 +1189,16 @@ PG.actions = (() => {
     return true;
   }
 
+  /** „Podejrzany plecak” — otwórz zawsze, gdy dialog widoczny. */
+  function openBag() {
+    const el = PG.selectors.resolve('open-bag-button', { reportMiss: false });
+    if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    noteAction();
+    fire(el);
+    PG.logger.action('bag_opened', true, { via: pgText(el.textContent, 40) });
+    return true;
+  }
+
   /** Wybór Pokémona do walki (slot z konfiguracji panelu). */
   function selectTeamMember(slot) {
     const btns = teamButtons();
@@ -1455,7 +1472,7 @@ PG.actions = (() => {
     parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
     manageDialogKind, confirmManageDialog, dialogConfirmText, parseDigCost,
     bridgeFresh, bridgePoint, pickPoint,
-    walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
+    walkAgain, openBag, selectTeamMember, skipBattle, throwBall, heal, healTeam,
     evolveTeam, sellPokemon,
     walkLocation,
     digFossil, collectBerries, openQuestTab, isVisible,
@@ -1506,6 +1523,7 @@ PG.panel = (() => {
     ['autoWalk', 'Wędrówki'],
     ['autoCatch', 'Łapanie po walce'],
     ['autoBerries', 'Zbieranie jagód'],
+    ['autoOpenBag', 'Otwórz podejrzany plecak'],
     ['autoSkipBattle', 'Pomiń animację walki'],
     ['autoQuests', 'Questy'],
     ['autoHeal', 'Picie drinków'],
@@ -2074,6 +2092,7 @@ PG.main = (() => {
     lastSkip: 0,
     lastHeal: 0,
     lastWalk: 0,
+    lastBagClick: 0,
     lastLoc: 0,
     lastBerry: 0,
     fossilTries: 0,
@@ -2288,6 +2307,16 @@ PG.main = (() => {
         sm.set('SCANNING', `ekran zmienił się po wędrówce (${screen})`);
         return;
       }
+
+      // ── Podejrzany plecak: „Otwórz plecak” ZAWSZE — priorytet nad resztą
+      // (HEAL/quest/wędrówka poczekają jeden tick). 2,5 s oddechu, gdyby
+      // po otwarciu został dialog wyniku.
+      if (cfg.autoOpenBag && Date.now() - sess.lastBagClick > 2500
+          && PG.actions.openBag()) {
+        sess.lastBagClick = Date.now();
+        return;
+      }
+
       const ap = PG.actions.parseAP();
       if (cfg.autoHeal && ap && ap.current < cfg.healBelow) {
         sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);

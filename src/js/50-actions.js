@@ -280,6 +280,16 @@ PG.actions = (() => {
     return true;
   }
 
+  /** „Podejrzany plecak” — otwórz zawsze, gdy dialog widoczny. */
+  function openBag() {
+    const el = PG.selectors.resolve('open-bag-button', { reportMiss: false });
+    if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    noteAction();
+    fire(el);
+    PG.logger.action('bag_opened', true, { via: pgText(el.textContent, 40) });
+    return true;
+  }
+
   /** Wybór Pokémona do walki (slot z konfiguracji panelu). */
   function selectTeamMember(slot) {
     const btns = teamButtons();
@@ -553,7 +563,7 @@ PG.actions = (() => {
     parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
     manageDialogKind, confirmManageDialog, dialogConfirmText, parseDigCost,
     bridgeFresh, bridgePoint, pickPoint,
-    walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
+    walkAgain, openBag, selectTeamMember, skipBattle, throwBall, heal, healTeam,
     evolveTeam, sellPokemon,
     walkLocation,
     digFossil, collectBerries, openQuestTab, isVisible,

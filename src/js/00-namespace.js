@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.10.3',
+  version: '0.10.5',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -43,6 +43,7 @@ const PG = {
     autoWalk: true,        // wędrówki ("Wędruj ponownie")
     autoCatch: true,       // rzut piłką po wygranej walce
     autoBerries: true,     // „Zbierz jagody” przy krzewie podczas wędrówki
+    autoOpenBag: true,     // „Podejrzany plecak” — zawsze „Otwórz plecak”
     autoSkipBattle: true,  // klikaj "Przejdź do końca walki"
     autoQuests: true,      // skan i rozliczanie questów
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
