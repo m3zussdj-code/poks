@@ -56,6 +56,9 @@ PG.selectors = (() => {
     'battle-skip-button': [
       { sel: 'button', re: /Przejdź do końca walki/ },
     ],
+    'berry-button': [
+      { sel: 'button', re: /Zbierz jagody/ },
+    ],
     'ball-card': [
       { sel: 'button', re: /Szansa złapania/i },
     ],

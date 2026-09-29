@@ -21,6 +21,7 @@ PG.panel = (() => {
     ENCOUNTER: ['orange', 'ENCOUNTER'],
     CATCH: ['orange', 'CATCH'],
     BATTLE: ['orange', 'BATTLE'],
+    BERRY: ['orange', 'BERRY'],
     QUEST_TURNIN: ['teal', 'QUEST_TURNIN'],
     HEAL: ['teal', 'HEAL'],
     INVENTORY: ['teal', 'INVENTORY'],
@@ -31,6 +32,7 @@ PG.panel = (() => {
   const TOGGLES = [
     ['autoWalk', 'Wędrówki'],
     ['autoCatch', 'Łapanie po walce'],
+    ['autoBerries', 'Zbieranie jagód'],
     ['autoSkipBattle', 'Pomiń animację walki'],
     ['autoQuests', 'Questy'],
     ['autoHeal', 'Picie drinków'],
@@ -211,6 +213,9 @@ PG.panel = (() => {
               <label class="field">Tick pętli (ms)
                 <input type="number" id="inTick" min="150" max="5000" step="50" />
               </label>
+              <label class="field">Jitter interwałów (%)
+                <input type="number" id="inJitter" min="0" max="80" step="5" />
+              </label>
             </div>
           </div>
 
@@ -300,6 +305,11 @@ PG.panel = (() => {
       // nowy interwał działa od razu, bez restartu bota:
       if (PG.main && typeof PG.main.restartLoop === 'function') PG.main.restartLoop();
     };
+    el('inJitter').onchange = (e) => {
+      const pct = Math.max(0, Math.min(80, parseInt(e.target.value, 10) || 0));
+      cfgSet('jitter', pct / 100, 'jitter');
+      if (PG.main && typeof PG.main.restartLoop === 'function') PG.main.restartLoop();
+    };
   }
 
   /** Zapis wartości do konfiguracji + log (persistencja w main). */
@@ -361,6 +371,7 @@ PG.panel = (() => {
 
     el('inThrows').value = PG.config.maxThrows;
     el('inTick').value = PG.config.tickMs;
+    el('inJitter').value = Math.round((PG.config.jitter || 0) * 100);
   }
 
   /** Snapshot ekranu: co bot „widzi” — do diagnostyki nowych ekranów. */

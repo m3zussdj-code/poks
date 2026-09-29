@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.4.0',
+  version: '0.5.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -15,14 +15,16 @@ const PG = {
    * (persistencja po odświeżeniu strony).
    */
   config: {
-    tickMs: 500,           // interwał pętli (im mniejszy, tym szybciej reaguje)
+    tickMs: 500,           // BAZOWY interwał pętli (zmodyfikowany przez jitter)
     graceMs: 2500,         // po kliknięciu czekamy tyle na aktualizację ekranu
+    jitter: 0.35,          // ±35% losowania wokół KAŻDEGO interwału i cooldownu
+                           // (0 = sztywne, robotnicze odstępy — nie używaj!)
     logLimit: 500,         // rozmiar ring buffera telemetrii
     missThrottleMs: 15000, // nie spamuj logów powtarzającymi się selector_miss
 
-    // minimalne odstępy między klikami (ms) — chronią przed spamowaniem
-    // serwera gry; gracz klika szybciej niż raz na sekundę, więc 600-800
-    // to wciąż bezpiecznie poniżej ludzkiego burstu.
+    // minimalne odstępy między klikami (ms) — BAZA przed jitterem.
+    // Chronią przed spamowaniem serwera; jitter robi z tego
+    // nieprzewidywany (ludzki) rozrzut.
     cooldowns: {
       walk: 800,
       team: 600,
@@ -30,11 +32,13 @@ const PG = {
       skip: 700,
       heal: 1200,
       location: 1500,
+      berry: 700,
     },
 
     // przełączniki widoczne w panelu:
     autoWalk: true,        // wędrówki ("Wędruj ponownie")
     autoCatch: true,       // rzut piłką po wygranej walce
+    autoBerries: true,     // „Zbierz jagody” przy krzewie podczas wędrówki
     autoSkipBattle: true,  // klikaj "Przejdź do końca walki"
     autoQuests: true,      // skan i rozliczanie questów
     autoHeal: true,        // picie drinków (odnowa punktów akcji)

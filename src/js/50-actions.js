@@ -189,6 +189,13 @@ PG.actions = (() => {
     return ok;
   }
 
+  /** Zebranie jagód z krzewu podczas wędrówki. */
+  function collectBerries() {
+    const ok = click('berry-button');
+    if (ok) PG.logger.action('collect_berries', true);
+    return ok;
+  }
+
   /** Start wędrówki z kokpitu przez kartę lokacji. */
   function walkLocation(name) {
     const loc = listLocations().find(
@@ -246,7 +253,7 @@ PG.actions = (() => {
     parseAP, parseBalls, isShinyEncounter, ballCatalog,
     teamButtons, peekTeam, listLocations,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, walkLocation,
-    openQuestTab, isVisible,
+    collectBerries, openQuestTab, isVisible,
     // stuby do wypełnienia (ekwipunek, questy):
     evolveTeam: () => { PG.logger.action('evolve', false, { stub: true }); return false; },
     sellPokemon: () => { PG.logger.action('sell', false, { stub: true }); return false; },

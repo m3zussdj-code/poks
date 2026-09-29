@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.4.0
+// @version      0.5.0
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.4.0',
+  version: '0.5.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -33,14 +33,16 @@ const PG = {
    * (persistencja po odświeżeniu strony).
    */
   config: {
-    tickMs: 500,           // interwał pętli (im mniejszy, tym szybciej reaguje)
+    tickMs: 500,           // BAZOWY interwał pętli (zmodyfikowany przez jitter)
     graceMs: 2500,         // po kliknięciu czekamy tyle na aktualizację ekranu
+    jitter: 0.35,          // ±35% losowania wokół KAŻDEGO interwału i cooldownu
+                           // (0 = sztywne, robotnicze odstępy — nie używaj!)
     logLimit: 500,         // rozmiar ring buffera telemetrii
     missThrottleMs: 15000, // nie spamuj logów powtarzającymi się selector_miss
 
-    // minimalne odstępy między klikami (ms) — chronią przed spamowaniem
-    // serwera gry; gracz klika szybciej niż raz na sekundę, więc 600-800
-    // to wciąż bezpiecznie poniżej ludzkiego burstu.
+    // minimalne odstępy między klikami (ms) — BAZA przed jitterem.
+    // Chronią przed spamowaniem serwera; jitter robi z tego
+    // nieprzewidywany (ludzki) rozrzut.
     cooldowns: {
       walk: 800,
       team: 600,
@@ -48,11 +50,13 @@ const PG = {
       skip: 700,
       heal: 1200,
       location: 1500,
+      berry: 700,
     },
 
     // przełączniki widoczne w panelu:
     autoWalk: true,        // wędrówki ("Wędruj ponownie")
     autoCatch: true,       // rzut piłką po wygranej walce
+    autoBerries: true,     // „Zbierz jagody” przy krzewie podczas wędrówki
     autoSkipBattle: true,  // klikaj "Przejdź do końca walki"
     autoQuests: true,      // skan i rozliczanie questów
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
@@ -296,6 +300,9 @@ PG.selectors = (() => {
     ],
     'battle-skip-button': [
       { sel: 'button', re: /Przejdź do końca walki/ },
+    ],
+    'berry-button': [
+      { sel: 'button', re: /Zbierz jagody/ },
     ],
     'ball-card': [
       { sel: 'button', re: /Szansa złapania/i },
@@ -851,7 +858,7 @@ PG.sm = (() => {
 
   return {
     STATES: ['STOPPED', 'SCANNING', 'WANDER', 'ENCOUNTER', 'CATCH', 'BATTLE',
-      'QUEST_TURNIN', 'HEAL', 'INVENTORY', 'SPECIAL_ENCOUNTER', 'NEEDS_REVIEW'],
+      'BERRY', 'QUEST_TURNIN', 'HEAL', 'INVENTORY', 'SPECIAL_ENCOUNTER', 'NEEDS_REVIEW'],
     get state() { return state; },
     get paused() { return paused; },
     get reason() { return reason; },
@@ -1053,6 +1060,13 @@ PG.actions = (() => {
     return ok;
   }
 
+  /** Zebranie jagód z krzewu podczas wędrówki. */
+  function collectBerries() {
+    const ok = click('berry-button');
+    if (ok) PG.logger.action('collect_berries', true);
+    return ok;
+  }
+
   /** Start wędrówki z kokpitu przez kartę lokacji. */
   function walkLocation(name) {
     const loc = listLocations().find(
@@ -1110,7 +1124,7 @@ PG.actions = (() => {
     parseAP, parseBalls, isShinyEncounter, ballCatalog,
     teamButtons, peekTeam, listLocations,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, walkLocation,
-    openQuestTab, isVisible,
+    collectBerries, openQuestTab, isVisible,
     // stuby do wypełnienia (ekwipunek, questy):
     evolveTeam: () => { PG.logger.action('evolve', false, { stub: true }); return false; },
     sellPokemon: () => { PG.logger.action('sell', false, { stub: true }); return false; },
@@ -1148,6 +1162,7 @@ PG.panel = (() => {
     ENCOUNTER: ['orange', 'ENCOUNTER'],
     CATCH: ['orange', 'CATCH'],
     BATTLE: ['orange', 'BATTLE'],
+    BERRY: ['orange', 'BERRY'],
     QUEST_TURNIN: ['teal', 'QUEST_TURNIN'],
     HEAL: ['teal', 'HEAL'],
     INVENTORY: ['teal', 'INVENTORY'],
@@ -1158,6 +1173,7 @@ PG.panel = (() => {
   const TOGGLES = [
     ['autoWalk', 'Wędrówki'],
     ['autoCatch', 'Łapanie po walce'],
+    ['autoBerries', 'Zbieranie jagód'],
     ['autoSkipBattle', 'Pomiń animację walki'],
     ['autoQuests', 'Questy'],
     ['autoHeal', 'Picie drinków'],
@@ -1338,6 +1354,9 @@ PG.panel = (() => {
               <label class="field">Tick pętli (ms)
                 <input type="number" id="inTick" min="150" max="5000" step="50" />
               </label>
+              <label class="field">Jitter interwałów (%)
+                <input type="number" id="inJitter" min="0" max="80" step="5" />
+              </label>
             </div>
           </div>
 
@@ -1427,6 +1446,11 @@ PG.panel = (() => {
       // nowy interwał działa od razu, bez restartu bota:
       if (PG.main && typeof PG.main.restartLoop === 'function') PG.main.restartLoop();
     };
+    el('inJitter').onchange = (e) => {
+      const pct = Math.max(0, Math.min(80, parseInt(e.target.value, 10) || 0));
+      cfgSet('jitter', pct / 100, 'jitter');
+      if (PG.main && typeof PG.main.restartLoop === 'function') PG.main.restartLoop();
+    };
   }
 
   /** Zapis wartości do konfiguracji + log (persistencja w main). */
@@ -1488,6 +1512,7 @@ PG.panel = (() => {
 
     el('inThrows').value = PG.config.maxThrows;
     el('inTick').value = PG.config.tickMs;
+    el('inJitter').value = Math.round((PG.config.jitter || 0) * 100);
   }
 
   /** Snapshot ekranu: co bot „widzi” — do diagnostyki nowych ekranów. */
@@ -1690,6 +1715,7 @@ PG.main = (() => {
   const sess = {
     encounterTries: 0,
     battleTries: 0,
+    berryTries: 0,
     throws: 0,
     healTries: 0,
     lastTeamClick: 0,
@@ -1698,13 +1724,26 @@ PG.main = (() => {
     lastHeal: 0,
     lastWalk: 0,
     lastLoc: 0,
+    lastBerry: 0,
   };
 
   const lastScreen = { value: null };
 
+  /**
+   * Losowy rozrzut wokół wartości bazowej (jitter).
+   * np. jrand(800) przy jitter=0.35 → 520..1080 ms.
+   * Dzięki temu interwały NIE są sztywne — klikanie nie wygląda
+   * jak sygnatura maszynowa (stały okres = łatwy wykrywalny wzorzec).
+   */
+  function jrand(base) {
+    const j = PG.config.jitter || 0;
+    return Math.round(base * (1 + (Math.random() * 2 - 1) * j));
+  }
+
   function resetSessionForScreen() {
     sess.encounterTries = 0;
     sess.battleTries = 0;
+    sess.berryTries = 0;
     sess.throws = 0;
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
@@ -1737,6 +1776,7 @@ PG.main = (() => {
   function detectScreen() {
     if (PG.selectors.resolve('encounter-preview', { reportMiss: false })) return 'encounter';
     if (PG.selectors.resolve('team-selection', { reportMiss: false })) return 'encounter';
+    if (PG.selectors.resolve('berry-button', { reportMiss: false })) return 'berry_select';
     if (PG.actions.parseBalls().length > 0) return 'ball_select';
     if (PG.selectors.resolve('battle-skip-button', { reportMiss: false })) return 'battle';
     if (PG.selectors.resolve('walk-again-button', { reportMiss: false })) return 'walk_ready';
@@ -1795,6 +1835,7 @@ PG.main = (() => {
 
       // 1) Ekrany akcji — routowane natychmiast, bez przerwy na heal.
       if (screen === 'encounter') { sm.set('ENCOUNTER', 'spotkanie w dziczy'); return; }
+      if (screen === 'berry_select') { sm.set('BERRY', 'krzew jagód'); return; }
       if (screen === 'ball_select') { sm.set('CATCH', 'wybór piłki po walce'); return; }
       if (screen === 'battle') { sm.set('BATTLE', 'walka w toku'); return; }
 
@@ -1813,7 +1854,7 @@ PG.main = (() => {
         const target = questWalkTarget() || cfg.walkLocation || '';
         if (target && cfg.autoWalk) {
           const now = Date.now();
-          if (now - sess.lastLoc > cfg.cooldowns.location) {
+          if (now - sess.lastLoc > jrand(cfg.cooldowns.location)) {
             sess.lastLoc = now;
             if (PG.actions.walkLocation(target)) setCurrentLoc(target);
           }
@@ -1822,7 +1863,7 @@ PG.main = (() => {
       }
 
       // 4) Nieznany ekran — grace period po kliknięciu (gra się jeszcze ładuje).
-      if (PG.actions.sinceLastAction() < cfg.graceMs) return;
+      if (PG.actions.sinceLastAction() < jrand(cfg.graceMs)) return;
 
       PG.logger.push('screen_unknown_snapshot', {
         integrityRoles: PG.selectors.integrityRoles(),
@@ -1847,7 +1888,7 @@ PG.main = (() => {
       const target = questWalkTarget();
       if (target && currentLoc() !== target) {
         const now = Date.now();
-        if (now - sess.lastLoc > cfg.cooldowns.location) {
+        if (now - sess.lastLoc > jrand(cfg.cooldowns.location)) {
           sess.lastLoc = now;
           if (PG.actions.walkLocation(target)) {
             PG.logger.push('quest_location_sync', { target, previous: currentLoc() });
@@ -1859,7 +1900,7 @@ PG.main = (() => {
       }
 
       const now2 = Date.now();
-      if (now2 - sess.lastWalk < cfg.cooldowns.walk) return; // min. odstęp między klikami
+      if (now2 - sess.lastWalk < jrand(cfg.cooldowns.walk)) return; // min. odstęp między klikami
       if (cfg.autoWalk) {
         sess.lastWalk = now2;
         if (!PG.actions.walkAgain()) {
@@ -1875,7 +1916,7 @@ PG.main = (() => {
         return;
       }
       const now = Date.now();
-      if (now - sess.lastTeamClick < cfg.cooldowns.team) return;
+      if (now - sess.lastTeamClick < jrand(cfg.cooldowns.team)) return;
       sess.lastTeamClick = now;
 
       const ok = PG.actions.selectTeamMember(cfg.teamSlot);
@@ -1895,7 +1936,7 @@ PG.main = (() => {
       if (!cfg.autoSkipBattle) return; // gra sama dokończy rundy
 
       const now = Date.now();
-      if (now - sess.lastSkip < cfg.cooldowns.skip) return;
+      if (now - sess.lastSkip < jrand(cfg.cooldowns.skip)) return;
       sess.lastSkip = now;
 
       if (PG.actions.skipBattle()) {
@@ -1921,7 +1962,7 @@ PG.main = (() => {
       }
 
       const now = Date.now();
-      if (now - sess.lastThrow < cfg.cooldowns.throw) return;
+      if (now - sess.lastThrow < jrand(cfg.cooldowns.throw)) return;
 
       if (sess.throws >= cfg.maxThrows) {
         sm.set('NEEDS_REVIEW', `max rzutów w potyczce (${cfg.maxThrows}) osiągnięty`);
@@ -1933,6 +1974,31 @@ PG.main = (() => {
       const shiny = PG.actions.isShinyEncounter();
       const ok = PG.actions.throwBall(shiny, sess.throws);
       if (!ok) sm.set('NEEDS_REVIEW', 'brak piłki z konfiguracji (priorytety P1/P2 niedostępne)');
+    });
+
+    sm.register('BERRY', () => {
+      const screen = detectScreen();
+      if (screen !== 'berry_select') {
+        sm.set('SCANNING', `ekran jagód zmienił się (${screen})`);
+        return;
+      }
+      if (!cfg.autoBerries) {
+        // Nie zbieramy — idziemy dalej wędrówką.
+        if (PG.actions.walkAgain()) sm.set('WANDER', 'autoBerries wyłączone — pomijam jagody');
+        else sm.set('NEEDS_REVIEW', 'brak przycisku przy pomijanych jagodach');
+        return;
+      }
+      const now = Date.now();
+      if (now - sess.lastBerry < jrand(cfg.cooldowns.berry)) return;
+      sess.lastBerry = now;
+      sess.berryTries += 1;
+      if (sess.berryTries > 5) {
+        sm.set('NEEDS_REVIEW', '„Zbierz jagody” nie zmienia ekranu (5 prób)');
+        return;
+      }
+      if (!PG.actions.collectBerries()) {
+        sm.set('NEEDS_REVIEW', 'brak przycisku „Zbierz jagody”');
+      }
     });
 
     sm.register('HEAL', () => {
@@ -1951,7 +2017,7 @@ PG.main = (() => {
         return;
       }
       const now = Date.now();
-      if (now - sess.lastHeal < cfg.cooldowns.heal) return;
+      if (now - sess.lastHeal < jrand(cfg.cooldowns.heal)) return;
       sess.lastHeal = now;
       if (cfg.autoHeal && PG.actions.heal()) {
         sess.healTries += 1;
@@ -1989,13 +2055,26 @@ PG.main = (() => {
 
   // ── pętla ─────────────────────────────────────────────────────────────────
 
+  let loopRunning = false;
+
+  /**
+   * Pętla SAMOPLANUJĄCA się (setTimeout): co tick losowany interwał
+   * jrand(tickMs) — brak stałego okresu, które łatwo wykryć analizą czasu.
+   */
   function startLoop() {
     stopLoop();
-    timer = setInterval(() => PG.sm.tick(), PG.config.tickMs);
+    loopRunning = true;
+    const step = () => {
+      if (!loopRunning) return;
+      PG.sm.tick();
+      if (loopRunning) timer = setTimeout(step, jrand(PG.config.tickMs));
+    };
+    timer = setTimeout(step, jrand(PG.config.tickMs));
   }
 
   function stopLoop() {
-    if (timer) clearInterval(timer);
+    loopRunning = false;
+    if (timer) clearTimeout(timer);
     timer = null;
   }
 
@@ -2060,7 +2139,7 @@ PG.main = (() => {
 
   /** Restart interwału (np. po zmianie tickMs w panelu). */
   function restartLoop() {
-    if (timer) startLoop();
+    if (loopRunning) startLoop();
   }
 
   return { start, stop, restartLoop, detectScreen, registerStates, persistConfig, loadConfig };
