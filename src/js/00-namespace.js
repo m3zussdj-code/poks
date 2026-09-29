@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.10.1',
+  version: '0.10.2',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,

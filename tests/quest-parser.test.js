@@ -231,6 +231,23 @@ eq(PG.actions.parseDigCost('Wróć do mapy'), null, ' brak PA w tekście → nul
 }
 eq(PG.actions.bridgePoint({ left: 0, top: 0, width: 0, height: 0 }), { x: 0, y: 0 },
   ' pusty rect → 0,0 (bez wyjątku)');
+{
+  let ok1 = true, ok2 = true;
+  for (let i = 0; i < 40; i++) {
+    const p = PG.actions.pickPoint({ left: 10, top: 20, width: 60, height: 30 },
+      800, 600, () => true);
+    if (!p || p.x < 10 || p.x > 69 || p.y < 20 || p.y > 49) ok1 = false;
+    const q = PG.actions.pickPoint({ left: -50, top: 590, width: 100, height: 40 },
+      800, 600, () => true);
+    if (!q || q.x < 0 || q.x > 49 || q.y < 590 || q.y > 599) ok2 = false;
+  }
+  eq(ok1, true, ' pickPoint: punkt wewnątrz widocznego prostokąta');
+  eq(ok2, true, ' pickPoint: rect częściowo poza viewportem → tylko widoczny wycinek');
+}
+eq(PG.actions.pickPoint({ left: 0, top: 0, width: 100, height: 50 }, 800, 600, () => null),
+  null, ' element w całości przesłonięty → null');
+eq(PG.actions.pickPoint({ left: 0, top: 700, width: 100, height: 50 }, 800, 600, () => true),
+  null, ' rect całkiem poza viewportem → null');
 assert(
   parseReserve('60/60Szybka sprzedaż pokemonów').current
     >= parseReserve('60/60Szybka sprzedaż pokemonów').max,

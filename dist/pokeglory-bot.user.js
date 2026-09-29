@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.10.1
+// @version      0.10.2
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.10.1',
+  version: '0.10.2',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -313,6 +313,9 @@ PG.selectors = (() => {
       { sel: 'button', re: /Leczenie wszystkich pokemonów/ },
     ],
     'battle-skip-button': [
+      // Atrybut z HTML „Przejdź do końca walki” (stable hook z tutoriala);
+      // tekst jako fallback, gdyby atrybat zniknął.
+      '[data-tutorial-target="battle-jump-to-end"]',
       { sel: 'button', re: /Przejdź do końca walki/ },
     ],
     // Podsumowanie PO walce (np. trener): rola result-actions + „Wróć do mapy".
@@ -952,6 +955,29 @@ PG.actions = (() => {
     return { x: Math.round(x), y: Math.round(y) };
   }
 
+  /**
+   * Szuka punktu w WIDOCZNYM wycinku prostokąta, który faktycznie trafia
+   * w element (hit-test przez document.elementFromPoint — element może być
+   * przesłonięty: panel bota, overlay gry, animacja, albo leżeć poza
+   * viewportem). Czysty (testowany): hit(x,y) → truthy, gdy punkt prowadzi
+   * do elementu. Zwraca {x, y} albo null.
+   */
+  function pickPoint(rect, vw, vh, hit, maxTries = 14) {
+    const x0 = Math.max(0, rect.left || 0);
+    const y0 = Math.max(0, rect.top || 0);
+    const x1 = Math.min(vw, (rect.left || 0) + (rect.width || 0));
+    const y1 = Math.min(vh, (rect.top || 0) + (rect.height || 0));
+    if (!(x1 - x0 >= 1 && y1 - y0 >= 1)) return null;
+    for (let i = 0; i < maxTries; i++) {
+      const x = Math.floor(x0 + Math.random() * (x1 - x0));
+      const y = Math.floor(y0 + Math.random() * (y1 - y0));
+      if (hit(x, y)) return { x, y };
+    }
+    const cx = Math.floor((x0 + x1) / 2);
+    const cy = Math.floor((y0 + y1) / 2);
+    return hit(cx, cy) ? { x: cx, y: cy } : null;
+  }
+
   let bridgeSeq = 0;
   let lastBridgeFallback = 0;
   let lastUndeliveredLog = 0;
@@ -962,10 +988,28 @@ PG.actions = (() => {
    * Zwraca 'cdp' | 'local'.
    */
   function fire(el) {
+    let fbReason = null;
     if (PG.config.cdpBridge && bridgeFresh()) {
       try {
-        const r = el.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        let r = el.getBoundingClientRect();
+        // Element POZA viewportem (poniżej krawędzi / przewinięty)?
+        // Współrzędne CDP trafiłyby w „niewidoczne miejsce”. Wprowadzamy
+        // go w widok (instant — bez animacji) i przeliczamy rect.
+        if (r.width <= 0 || r.height <= 0 || r.bottom < 2 || r.right < 2
+            || r.top > vh - 2 || r.left > vw - 2) {
+          el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+          r = el.getBoundingClientRect();
+        }
+        // Hit-test: punkt musi faktycznie prowadzić DO elementu.
+        const p = r.width > 0 && r.height > 0
+          ? pickPoint(r, vw, vh, (x, y) => {
+            const t = document.elementFromPoint(x, y);
+            return !!(t && (t === el || el.contains(t)));
+          })
+          : null;
+        if (p) {
           // Poprzednie żądanie wciąż stoi po >4 s = driver go nie dostarczył.
           const old = window.__pgClick;
           if (old && old.ts && Date.now() - old.ts > 4000
@@ -974,16 +1018,17 @@ PG.actions = (() => {
             PG.logger.push('bridge_undelivered', { oldId: old.id, ageMs: Date.now() - old.ts });
           }
           bridgeSeq += 1;
-          const p = bridgePoint(r);
           window.__pgClick = { id: bridgeSeq, x: p.x, y: p.y, ts: Date.now() };
           return 'cdp';
         }
-      } catch (_) { /* rect niedostępny → fallback */ }
+        fbReason = 'not_clickable'; // po scrollu nadal poza viewportem / zasłonięty
+      } catch (_) { fbReason = 'rect'; }
     }
     if (!bridgeFresh()) window.__pgClick = null; // nie zostawiamy ducha żądania
     if (PG.config.cdpBridge && Date.now() - lastBridgeFallback > 60000) {
       lastBridgeFallback = Date.now();
-      PG.logger.push('bridge_fallback', { reason: bridgeFresh() ? 'rect' : 'no_driver' });
+      PG.logger.push('bridge_fallback',
+        { reason: fbReason || (bridgeFresh() ? 'rect' : 'no_driver') });
     }
     el.click();
     return 'local';
@@ -1407,7 +1452,7 @@ PG.actions = (() => {
     parseTeamHpText, teamHpList, teamLowHp,
     parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
     manageDialogKind, confirmManageDialog, dialogConfirmText, parseDigCost,
-    bridgeFresh, bridgePoint,
+    bridgeFresh, bridgePoint, pickPoint,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
     evolveTeam, sellPokemon,
     walkLocation,

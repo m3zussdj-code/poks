@@ -62,6 +62,9 @@ PG.selectors = (() => {
       { sel: 'button', re: /Leczenie wszystkich pokemonów/ },
     ],
     'battle-skip-button': [
+      // Atrybut z HTML „Przejdź do końca walki” (stable hook z tutoriala);
+      // tekst jako fallback, gdyby atrybat zniknął.
+      '[data-tutorial-target="battle-jump-to-end"]',
       { sel: 'button', re: /Przejdź do końca walki/ },
     ],
     // Podsumowanie PO walce (np. trener): rola result-actions + „Wróć do mapy".
