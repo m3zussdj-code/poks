@@ -1,6 +1,6 @@
 # PG Edu Bot — skompaktowany stan ( czytaj TO zamiast full memory )
 
-Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **1819ed2 = v0.10.3**, testy **80/80 + driver 16/16**.
+Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **f26d89c = v0.10.4**, testy **80/80 + driver 16/16**.
 Serwer dist: port **8377** (statyczny `python3 -m http.server` → `dist/`); przed podaniem URL → `curl -sf localhost:8377/pokeglory-bot.user.js | head -4`, restart = `start_process`.
 
 ## Konwencje (twarde)
@@ -82,6 +82,46 @@ błąd dispatcha → lokalny catch + ponowienie (bez resetu sesji, żądanie ży
 userscript: event `bridge_undelivered` gdy żądanie >4 s niezniknięte. **Diagnoza: jeśli export
 pokaże `throw_unverified` bez `bridge_undelivered` — problem po stronie gry/timing; z
 `bridge_undelivered` — driver nie dispatchuje (patrz terminal drivera).**
+
+## v0.10.4 — ZROBIONE (`f26d89c`, zero lokalnych klików przy CDP — antycheat)
+
+Sygnał z gry (konsola usera): `[anti-cheat] Mocny sygnał automatyzacji
+{action:'walk_again_button', strongSignal:true}` — **nasz fallback
+`el.click()` (isTrusted=false) poszedł synchronicznie z `fire()`** (stack:
+fire:1036 → onClick gry). Kod to wiedział: komentarz przy mostku — „lokalny
+el.click() = +80 pkt dla antycheatu (próg 70)”. W tej sesji CDP **nie
+zadziałało** (dwie przyczyny do rozstrzygnięcia z `bridge_wait` w eksportcie:
+`no_driver` = brak heartbeatu `window.__pgBridge` / driver nie odpalony,
+albo `not_clickable` = pickPoint null — element zasłonięty, np. dialog
+„Podejrzany plecak”).
+
+Zmiana (CTR: fire() i wywołujący):
+1. **`fire()`**: `cdpBridge=ON` + (brak świeżego heartbeatu | pickPoint
+   null | exception) → **NIE `el.click()`**, tylko `'wait'` + log
+   `bridge_wait{reason: no_driver|not_clickable|rect}` (throttle 15 s).
+   `el.click()` TYLKO przy `cdpBridge=OFF` (świadomy wybór usera).
+   Usunięte `bridge_fallback`/`lastBridgeFallback`. Zwraca
+   `'cdp'|'wait'|'local'`; stan `lastFire` + `lastWaitReason/lastWaitTs`.
+2. **Wszystkie strony wywołujące** zwracają false/null przy `'wait'`:
+   `click(name)` (walkAgain/skipBattle/heal/evolve/sell/dig/berry),
+   `selectTeamMember` (action false z wait), `throwBall` → **null**
+   (CATCH odróżnia od „brak piłki”), `healTeam`, `confirmManageDialog`,
+   `walkLocation`, `openQuestTab`. Dzięki temu liczniki grace z v0.10.3
+   (walkMissingTries/teamMissingTries/…) liczą też wstrzymania.
+3. **70-main `waitReview(fallback)`** (define w registerStates PRZED blokiem
+   `if (!sm.__ackResetsCatch)` — uwaga: nie wchodzić do środka tego ifa!):
+   świeże `PG.actions.lastWait()` (<1,5 s) → komunikat „klik wstrzymany:
+   driver CDP nie odpowiada (uruchom pg-cdp-driver)” albo „element zasłonięty
+   lub poza kadrem (CDP)” zamiast „brak przycisku/drużyny/piłki”. Użyte:
+   WANDER (walkMissingTries≥3), ENCOUNTER leczenie (`!healTeam`),
+   ENCOUNTER drużyna (teamMissingTries>4), CATCH (`!thrown`).
+4. Eksporty: `lastWait`, `lastFireKind` (obok `bridgeFresh, bridgePoint,
+   pickPoint`). Wersja 0.10.4 (meta+00). Build 109363 B, 80/80+16/16.
+
+Auto-rescan (v0.10.3) + 'wait': przy wyłączonym driverze bot cykluje
+REVIEW↔SCANNING bez klików (bez punktów antycheatu); wystartowanie drivera
+od razu odblokowuje CDP. Dialog „Podejrzany plecak” (nowy na mapie) nie
+blokuje wędrówek — nie otwieramy (decyzja usera).
 
 ## v0.10.3 — ZROBIONE (`1819ed2`, auto-rescan po NEEDS_REVIEW + grace)
 
