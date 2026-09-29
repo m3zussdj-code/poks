@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.9.0',
+  version: '0.10.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -48,6 +48,7 @@ const PG = {
     autoHealTeam: true,    // lecz HP pokemonów (< healHpBelow%) — ekran spotkania
     autoManage: true,     // rezerwa pełna → ewoluuj (dialogi) → sprzedaj (dialog)
     autoResume: true,      // wznowienie działania po odświeżeniu strony
+    cdpBridge: true,       // klik przez driver CDP (trusted events) zamiast el.click()
     questLocation: true,   // cel z questa WALK_IN steruje wyborem lokacji
     pauseOnSpecial: true,  // shiny / tutor → zatrzymaj się i pokaż NEEDS_REVIEW
     debugConsole: true,    // lustrzane logi do konsoli przeglądarki

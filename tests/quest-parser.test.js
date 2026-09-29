@@ -220,6 +220,17 @@ eq(PG.actions.dialogConfirmText('evolve'), 'Ewoluuj wszystkie', ' dialog ewolucj
 eq(PG.actions.dialogConfirmText('sell'), 'Sprzedaj', ' dialog sprzedaży');
 eq(PG.actions.parseDigCost('Odkop nagrodę (10 PA)'), 10, ' koszt kopania z przycisku');
 eq(PG.actions.parseDigCost('Wróć do mapy'), null, ' brak PA w tekście → null');
+{
+  let inb = true;
+  const r = { left: 100, top: 50, width: 60, height: 30 };
+  for (let i = 0; i < 50; i++) {
+    const p = PG.actions.bridgePoint(r);
+    if (p.x < 108 || p.x > 152 || p.y < 53 || p.y > 77) inb = false;
+  }
+  eq(inb, true, ' punkt kliknięcia CDP zawsze wewnątrz elementu (z marginesem)');
+}
+eq(PG.actions.bridgePoint({ left: 0, top: 0, width: 0, height: 0 }), { x: 0, y: 0 },
+  ' pusty rect → 0,0 (bez wyjątku)');
 assert(
   parseReserve('60/60Szybka sprzedaż pokemonów').current
     >= parseReserve('60/60Szybka sprzedaż pokemonów').max,

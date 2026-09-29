@@ -29,4 +29,9 @@ if command -v node >/dev/null 2>&1; then
   node --check "$OUT"
 fi
 
+# driver CDP — do dist, żeby dało się go pobrać z serwera instalatora
+if [ -f driver/pg-cdp-driver.mjs ]; then
+  cp driver/pg-cdp-driver.mjs dist/
+fi
+
 echo "OK → ${OUT} ($(wc -c < "$OUT") bajtów, $(wc -l < "$OUT") linii)"

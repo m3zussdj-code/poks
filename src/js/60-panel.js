@@ -42,6 +42,7 @@ PG.panel = (() => {
     ['questLocation', 'Cel z questa → lokacja'],
     ['pauseOnSpecial', 'Pauza: shiny/tutor'],
     ['debugConsole', 'Log do konsoli'],
+    ['cdpBridge', 'Klik przez CDP (trusted)'],
   ];
 
   const CSS = `
@@ -422,7 +423,9 @@ PG.panel = (() => {
     const [color, label] = BADGE[PG.sm.state] || ['gray', PG.sm.state];
     const badge = el('badge');
     badge.className = `badge ${color}`;
-    badge.textContent = PG.sm.paused && PG.sm.state !== 'STOPPED' ? `${label} ⏸` : label;
+    const cdpTag = !PG.config.cdpBridge ? ''
+      : (PG.actions.bridgeFresh() ? ' · CDP✓' : ' · CDP✗');
+    badge.textContent = (PG.sm.paused && PG.sm.state !== 'STOPPED' ? `${label} ⏸` : label) + cdpTag;
 
     // Banner NEEDS_REVIEW:
     const banner = el('banner');

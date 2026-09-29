@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.9.0
+// @version      0.10.0
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.9.0',
+  version: '0.10.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -66,6 +66,7 @@ const PG = {
     autoHealTeam: true,    // lecz HP pokemonów (< healHpBelow%) — ekran spotkania
     autoManage: true,     // rezerwa pełna → ewoluuj (dialogi) → sprzedaj (dialog)
     autoResume: true,      // wznowienie działania po odświeżeniu strony
+    cdpBridge: true,       // klik przez driver CDP (trusted events) zamiast el.click()
     questLocation: true,   // cel z questa WALK_IN steruje wyborem lokacji
     pauseOnSpecial: true,  // shiny / tutor → zatrzymaj się i pokaż NEEDS_REVIEW
     debugConsole: true,    // lustrzane logi do konsoli przeglądarki
@@ -923,6 +924,63 @@ PG.actions = (() => {
     return Date.now() - lastActionAt;
   }
 
+  // ── mostek CDP: klik przez driver (trusted event z przeglądarki) ─────────
+  // Samodzielne el.click() ma isTrusted=false → antycheat gry dostaje +80 pkt
+  // (próg 70) i loguje „Mocny sygnał automatyzacji”. Zamiast tego piszemy
+  // żądanie do window.__pgClick; driver (driver/pg-cdp-driver.mjs, Chrome
+  // z --remote-debugging-port) odczytuje je przez CDP i klika przez
+  // Input.dispatchMouseEvent — przeglądarka generuje ZAUFAŁY event z pełną
+  // trajektorią myszy. Status drivera: heartbeat window.__pgBridge.
+
+  /** Czy driver żyje (heartbeat < 5 s)? Odczyt stanu — bezsidefektowy. */
+  function bridgeFresh() {
+    const b = window.__pgBridge;
+    return !!(b && b.ok && Number.isFinite(b.ts) && Date.now() - b.ts < 5000);
+  }
+
+  /**
+   * Punkt kliknięcia wewnątrz prostokąta elementu (15% margines) — czysty
+   * (testowany): nigdy na krawędzi, lekko poza środkiem jak u człowieka.
+   */
+  function bridgePoint(rect) {
+    const w = Math.max(0, rect.width || 0);
+    const h = Math.max(0, rect.height || 0);
+    const mx = Math.min(w / 2, Math.max(1, w * 0.15));
+    const my = Math.min(h / 2, Math.max(1, h * 0.15));
+    const x = (rect.left || 0) + mx + Math.random() * Math.max(0, w - 2 * mx);
+    const y = (rect.top || 0) + my + Math.random() * Math.max(0, h - 2 * my);
+    return { x: Math.round(x), y: Math.round(y) };
+  }
+
+  let bridgeSeq = 0;
+  let lastBridgeFallback = 0;
+
+  /**
+   * Jedno miejsce klikania gry: CDP (trusted) → window.__pgClick;
+   * bez drivera / bez konfiguracji → zwykły el.click() (fallback).
+   * Zwraca 'cdp' | 'local'.
+   */
+  function fire(el) {
+    if (PG.config.cdpBridge && bridgeFresh()) {
+      try {
+        const r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          bridgeSeq += 1;
+          const p = bridgePoint(r);
+          window.__pgClick = { id: bridgeSeq, x: p.x, y: p.y, ts: Date.now() };
+          return 'cdp';
+        }
+      } catch (_) { /* rect niedostępny → fallback */ }
+    }
+    if (!bridgeFresh()) window.__pgClick = null; // nie zostawiamy ducha żądania
+    if (PG.config.cdpBridge && Date.now() - lastBridgeFallback > 60000) {
+      lastBridgeFallback = Date.now();
+      PG.logger.push('bridge_fallback', { reason: bridgeFresh() ? 'rect' : 'no_driver' });
+    }
+    el.click();
+    return 'local';
+  }
+
   /** Klik w element znaleziony po nazwie logicznej. */
   function click(name) {
     const el = PG.selectors.resolve(name);
@@ -932,7 +990,7 @@ PG.actions = (() => {
       return false;
     }
     noteAction();
-    el.click();
+    fire(el);
     return true;
   }
 
@@ -1078,7 +1136,7 @@ PG.actions = (() => {
       return false;
     }
     noteAction();
-    b.click();
+    fire(b);
     PG.logger.action('team_member_selected', true, {
       slot: slot || 1,
       teamSize: btns.length,
@@ -1109,7 +1167,7 @@ PG.actions = (() => {
         continue;
       }
       noteAction();
-      b.el.click();
+      fire(b.el);
       PG.logger.action('throw_ball', true, {
         name, chance: b.chance, qty: b.qty, shiny: !!shiny, attempt,
         pref,
@@ -1149,7 +1207,7 @@ PG.actions = (() => {
       return false;
     }
     noteAction();
-    el.click();
+    fire(el);
     PG.logger.action('team_heal', true, {
       via: pgText(el.textContent, 40),
       wasVisible: isVisible(el),
@@ -1234,7 +1292,7 @@ PG.actions = (() => {
         return false;
       }
       noteAction();
-      btn.click();
+      fire(btn);
       PG.logger.action('dialog_confirm', true, { kind });
       return true;
     }
@@ -1298,7 +1356,7 @@ PG.actions = (() => {
     }
     lastFail = '';
     noteAction();
-    loc.el.click();
+    fire(loc.el);
     PG.logger.action('location_walk_started', true, { name: loc.name, cost: loc.cost });
     return true;
   }
@@ -1325,7 +1383,7 @@ PG.actions = (() => {
       return false;
     }
     noteAction();
-    el.click();
+    fire(el);
     PG.logger.action('open_quest_view', true, {
       via: el.id || el.getAttribute('aria-label') || el.getAttribute('title') || el.tagName,
       wasVisible: isVisible(el),
@@ -1340,6 +1398,7 @@ PG.actions = (() => {
     parseTeamHpText, teamHpList, teamLowHp,
     parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
     manageDialogKind, confirmManageDialog, dialogConfirmText, parseDigCost,
+    bridgeFresh, bridgePoint,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
     evolveTeam, sellPokemon,
     walkLocation,
@@ -1400,6 +1459,7 @@ PG.panel = (() => {
     ['questLocation', 'Cel z questa → lokacja'],
     ['pauseOnSpecial', 'Pauza: shiny/tutor'],
     ['debugConsole', 'Log do konsoli'],
+    ['cdpBridge', 'Klik przez CDP (trusted)'],
   ];
 
   const CSS = `
@@ -1780,7 +1840,9 @@ PG.panel = (() => {
     const [color, label] = BADGE[PG.sm.state] || ['gray', PG.sm.state];
     const badge = el('badge');
     badge.className = `badge ${color}`;
-    badge.textContent = PG.sm.paused && PG.sm.state !== 'STOPPED' ? `${label} ⏸` : label;
+    const cdpTag = !PG.config.cdpBridge ? ''
+      : (PG.actions.bridgeFresh() ? ' · CDP✓' : ' · CDP✗');
+    badge.textContent = (PG.sm.paused && PG.sm.state !== 'STOPPED' ? `${label} ⏸` : label) + cdpTag;
 
     // Banner NEEDS_REVIEW:
     const banner = el('banner');
