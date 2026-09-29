@@ -1,6 +1,6 @@
 # PG Edu Bot — skompaktowany stan ( czytaj TO zamiast full memory )
 
-Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **f26d89c = v0.10.4**, testy **80/80 + driver 16/16**.
+Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **4d9d825 = v0.10.5**, testy **80/80 + driver 16/16**.
 Serwer dist: port **8377** (statyczny `python3 -m http.server` → `dist/`); przed podaniem URL → `curl -sf localhost:8377/pokeglory-bot.user.js | head -4`, restart = `start_process`.
 
 ## Konwencje (twarde)
@@ -83,7 +83,43 @@ userscript: event `bridge_undelivered` gdy żądanie >4 s niezniknięte. **Diagn
 pokaże `throw_unverified` bez `bridge_undelivered` — problem po stronie gry/timing; z
 `bridge_undelivered` — driver nie dispatchuje (patrz terminal drivera).**
 
-## v0.10.4 — ZROBIONE (`f26d89c`, zero lokalnych klików przy CDP — antycheat)
+## v0.10.5 — ZROBIONE (`4d9d825`, powrót do bazy 0.10.3 + Podejrzany plecak)
+
+**Decyzja usera: v0.10.4 wyleciało („psuja bota”)** — bot ma działać też bez
+drivera (lokalny `el.click()` fallback wrócił, `bridge_fallback` wrócił).
+Revert `f26d89c` → `72f3954`. Baza = v0.10.3 (auto-rescan + grace),
+wersja bumpowana na 0.10.5 (0.10.4 już rozesłane — update wymaga wzrostu).
+
+Nowa funkcja — dialog „Podejrzany plecak” (snapshot 2026-09-29, /mapa;
+dialog ma role `result-actions`+`walk-again-button`, ale detectScreen daje
+`walk_ready` — WANDER działał przy otwartym dialogu):
+1. **20-selectors** `'open-bag-button': [{sel:'button', re:/^Otwórz plecak$/}]`
+   — trafia tylko w „Otwórz plecak” (nie „Wróć do mapy”).
+2. **50-actions `openBag()`**: `resolve('open-bag-button', {reportMiss:false})`
+   (bez spamu selector_miss przy braku dialogu), disabled → false; `noteAction`
+   + `fire` + `PG.logger.action('bag_opened', true, {via})`; eksport
+   `walkAgain, openBag, selectTeamMember, …`.
+3. **70-main WANDER** — tuż PO guardzie ekranu (walk_ready|battle_result),
+   PRZED HEAL/rezerwą/quest-sync/wędrówką:
+   `cfg.autoOpenBag && Date.now()-sess.lastBagClick > 2500 && PG.actions.openBag()`
+   → `sess.lastBagClick = now; return;` — „zawsze klikał” niezależnie od PA.
+   `sess.lastBagClick: 0` w init (bez resetu — jak lastWalk).
+4. **00**: `autoOpenBag: true` (obok autoBerries), version 0.10.5;
+   **60-panel TOGGLES**: `['autoOpenBag','Otwórz podejrzany plecak']`.
+Build 107949 B, 80/80+16/16. Nieznany: co widać PO otwarciu (dialog wyniku?)
+— jeśli coś blokuje dalszą wędrówkę, user poda snapshot.
+
+## v0.10.4 — COFNIĘTE (`f26d89c` → revert `72f3954`, user: „psuja bota”)
+
+Zachowano tylko diagnozę: `[anti-cheat] Mocny sygnał automatyzacji
+{action:'walk_again_button', strongSignal:true}` = **nasz lokalny
+`el.click()` (isTrusted=false)** poszedł synchronicznie z `fire()` (stack:
+fire:1036 → onClick gry); komentarz przy mostku: +80 pkt przy progu 70.
+v0.10.4 (fire 'wait' zamiast local + waitReview) było technicznie poprawne,
+ale user wolał działającego bota bez drivera → całość zrevertowana
+(przywrócone: bridge_fallback throttle 60 s, click()/selectTeamMember/
+throwBall zwracające sukces po lokalnym kliku, bez waitReview).
+
 
 Sygnał z gry (konsola usera): `[anti-cheat] Mocny sygnał automatyzacji
 {action:'walk_again_button', strongSignal:true}` — **nasz fallback
