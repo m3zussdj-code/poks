@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.2.0
+// @version      0.3.0
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.2.0',
+  version: '0.3.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -45,6 +45,7 @@ const PG = {
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
     autoManage: false,     // ewolucja + sprzedaż — wymaga potwierdzenia UI
     autoResume: true,      // wznowienie działania po odświeżeniu strony
+    questLocation: true,   // cel z questa WALK_IN steruje wyborem lokacji
     pauseOnSpecial: true,  // shiny / tutor → zatrzymaj się i pokaż NEEDS_REVIEW
     debugConsole: true,    // lustrzane logi do konsoli przeglądarki
 
@@ -563,6 +564,131 @@ PG.quest = (() => {
 
   // ───────────────────────── warstwa DOM (eskstrakcja) ──────────────────────
 
+  // ───────────────── sidebar questów („Zadania Billa”) ─────────────────────
+
+  /**
+   * Czysty parser widgetu questowego w sidebarze (bez DOM-u → testy).
+   * Wejście: innerText widgetu + kroki z klas CSS (is-complete / is-active).
+   *
+   * Typowa struktura:
+   *   Zadania Billa
+   *   Aktywne zadanie i jego nagrody
+   *   Eksperckie Trakt Prizmański      ← tier + obszar
+   *   Rozliczający raport wyzwań       ← tytuł
+   *   Nagrody -10%
+   *   Wykonaj 540 wędrówek w lokacji Mroczne Miasto   ← cel (verb!)
+   *   Aktywne / 74/540 / x
+   *   Nagrody 51x Power Drink 2,630,790 ¥
+   */
+  function parseSidebarQuest(text, steps = []) {
+    const lines = String(text ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const goalIdx = lines.findIndex((l) => GOAL_VERBS.test(normalize(l)));
+    if (goalIdx < 0) return { active: false };
+
+    const anchor = lines.findIndex((l) => /^Aktywne zadanie/i.test(l));
+    const goalText = normalize(lines[goalIdx]);
+    const parsed = classify(goalText);
+
+    let status = 'unknown';
+    let progress = null;
+    for (let i = goalIdx + 1; i < Math.min(lines.length, goalIdx + 6); i++) {
+      const line = lines[i];
+      if (/^Nagrody/i.test(line)) break;
+      const st = parseStatus(line);
+      if (st) { status = st; continue; }
+      const pr = parseProgress(line);
+      if (pr && !progress) { progress = pr; break; }
+    }
+
+    const rewards = lines.slice(goalIdx).find((l) => /^Nagrody\s+\d/.test(l)) || null;
+    const title = (anchor >= 0 && lines[anchor + 2]) || lines[goalIdx - 2] || null;
+    const tierArea = (anchor >= 0 && lines[anchor + 1]) || null;
+
+    const activeIdx = steps.findIndex((s) => s.active);
+    return {
+      active: true,
+      title,
+      tierArea,
+      goal: { text: goalText, parsed, status, progress },
+      steps: {
+        total: steps.length || null,
+        done: steps.filter((s) => s.done).length,
+        active: activeIdx >= 0 ? activeIdx + 1 : null,
+      },
+      rewards,
+    };
+  }
+
+  /** Ostatni stan widgetu sidebar + odcisk (do logowania tylko przy zmianie). */
+  let sidebar = null;
+  let sidebarFp = null;
+
+  /**
+   * Odczytaj widget questów ze strony (kroki mają klasy CSS gry).
+   * Wykrywany na KAŻDYM ekranie — sidebar jest globalny.
+   */
+  function scanSidebar() {
+    const step = document.querySelector('.player-sidebar-quest-step');
+    if (!step) {
+      if (sidebar) {
+        sidebar = null;
+        sidebarFp = null;
+        PG.logger.push('sidebar_quest_cleared', {});
+        if (PG.panel) PG.panel.render();
+      } else {
+        PG.logger.selectorMiss('sidebar-quest-widget');
+      }
+      return null;
+    }
+
+    // Najmniejszy przodek zawierający nagłówek „Zadania …”:
+    let cont = null;
+    for (let el = step, i = 0; el && i < 8; el = el.parentElement, i += 1) {
+      const t = el.innerText || '';
+      if (/Zadania\s/.test(t) && t.length < 2500) { cont = el; break; }
+    }
+    if (!cont) {
+      PG.logger.selectorMiss('sidebar-quest-widget', { hint: 'kroki znalezione, brak nadrzędnego z nagłówkiem' });
+      return null;
+    }
+
+    const steps = [...cont.querySelectorAll('.player-sidebar-quest-step')].map((s) => ({
+      done: s.classList.contains('is-complete'),
+      active: s.classList.contains('is-active') || s.classList.contains('is-selected'),
+    }));
+
+    const parsed = parseSidebarQuest(cont.innerText, steps);
+    sidebar = { ts: new Date().toISOString(), ...parsed };
+
+    const fp = JSON.stringify([
+      parsed.active, parsed.title,
+      parsed.goal && parsed.goal.text,
+      parsed.goal && parsed.goal.progress,
+      parsed.steps,
+    ]);
+    if (fp !== sidebarFp) {
+      sidebarFp = fp;
+      if (parsed.active) {
+        PG.logger.push('sidebar_quest', {
+          title: parsed.title,
+          tierArea: parsed.tierArea,
+          goal: parsed.goal.text,
+          type: parsed.goal.parsed.type,
+          status: parsed.goal.status,
+          progress: parsed.goal.progress,
+          steps: parsed.steps,
+          rewards: parsed.rewards,
+        });
+        if (PG.panel) PG.panel.render();
+      }
+    }
+    return sidebar;
+  }
+
   /** Ostatni wynik skanu — panel to renderuje. */
   let last = null;
 
@@ -594,8 +720,10 @@ PG.quest = (() => {
     return last;
   }
 
-  return { normalize, classify, parseQuestText, parseStatus, parseProgress, scan, PATTERNS,
-    get last() { return last; } };
+  return { normalize, classify, parseQuestText, parseStatus, parseProgress,
+    parseSidebarQuest, scanSidebar, scan, PATTERNS,
+    get last() { return last; },
+    get sidebar() { return sidebar; } };
 })();
 
 /* ===== src/js/40-state-machine.js ===== */
@@ -723,6 +851,7 @@ PG.sm = (() => {
 
 PG.actions = (() => {
   let lastActionAt = 0;
+  let lastFail = '';
 
   function noteAction() {
     lastActionAt = Date.now();
@@ -900,15 +1029,49 @@ PG.actions = (() => {
       (x) => x.name.localeCompare(name, 'pl', { sensitivity: 'base' }) === 0
     );
     if (!loc || loc.el.disabled) {
-      PG.logger.push('location_not_found', {
-        wanted: name,
-        have: listLocations().map((x) => x.name),
-      });
+      if (lastFail !== name) {
+        lastFail = name;
+        PG.logger.push('location_not_found', {
+          wanted: name,
+          have: listLocations().map((x) => x.name),
+        });
+      }
       return false;
     }
+    lastFail = '';
     noteAction();
     loc.el.click();
     PG.logger.action('location_walk_started', true, { name: loc.name, cost: loc.cost });
+    return true;
+  }
+
+  function isVisible(el) {
+    return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+  }
+
+  /**
+   * Otwórz pełny widok questów (zakładka Billa w sidebarze).
+   * Eksperymentalne: nie wiemy jeszcze, czy to nawigacja, czy panel —
+   * dlatego klik jest logowany, a następnie użytkownik robi snapshot.
+   */
+  function openQuestTab() {
+    const candidates = [
+      document.getElementById('collapsed-player-sidebar-bill-tab'),
+      ...document.querySelectorAll('[id$="-bill-tab"]'),
+      ...document.querySelectorAll('[aria-label*="bill" i], [title*="bill" i]'),
+      ...document.querySelectorAll('[aria-label*="Zadania" i], [title*="Zadania" i]'),
+    ].filter(Boolean);
+    const el = candidates.find(isVisible) || candidates[0];
+    if (!el) {
+      PG.logger.push('quest_tab_not_found', {});
+      return false;
+    }
+    noteAction();
+    el.click();
+    PG.logger.action('open_quest_view', true, {
+      via: el.id || el.getAttribute('aria-label') || el.getAttribute('title') || el.tagName,
+      wasVisible: isVisible(el),
+    });
     return true;
   }
 
@@ -917,6 +1080,7 @@ PG.actions = (() => {
     parseAP, parseBalls, isShinyEncounter, ballCatalog,
     teamButtons, peekTeam, listLocations,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, walkLocation,
+    openQuestTab, isVisible,
     // stuby do wypełnienia (ekwipunek, questy):
     evolveTeam: () => { PG.logger.action('evolve', false, { stub: true }); return false; },
     sellPokemon: () => { PG.logger.action('sell', false, { stub: true }); return false; },
@@ -969,6 +1133,7 @@ PG.panel = (() => {
     ['autoHeal', 'Picie drinków'],
     ['autoManage', 'Ewolucja/sprzedaż'],
     ['autoResume', 'Wznów po odświeżeniu'],
+    ['questLocation', 'Cel z questa → lokacja'],
     ['pauseOnSpecial', 'Pauza: shiny/tutor'],
     ['debugConsole', 'Log do konsoli'],
   ];
@@ -1107,6 +1272,7 @@ PG.panel = (() => {
             <button class="act" id="btnPause">⏸ Pauza</button>
             <button class="act" id="btnStop">⏹ Stop</button>
             <button class="act" id="btnScan">🔍 Skan questów</button>
+            <button class="act" id="btnQuestView">🗺 Pełny widok</button>
           </div>
 
           <div class="toggles" id="toggles"></div>
@@ -1179,6 +1345,11 @@ PG.panel = (() => {
     el('btnScan').onclick = () => {
       const r = PG.quest.scan();
       if (!r) appendLogRow({ ts: new Date().toISOString(), event: 'quest_scan', msg: 'nie znaleziono kontenera questów — zobacz selector_miss' });
+    };
+
+    el('btnQuestView').onclick = () => {
+      const ok = PG.actions.openQuestTab();
+      flash(el('btnQuestView'), ok ? '🗺 Otwieram…' : '🗺 Nie znaleziono zakładki');
     };
 
     el('btnCopy').onclick = async () => {
@@ -1292,6 +1463,8 @@ PG.panel = (() => {
           cls: pgText(b.className, 100),
         };
         if (b.tagName === 'A') o.href = b.getAttribute('href');
+        const lab = b.getAttribute('aria-label') || b.getAttribute('title');
+        if (lab) o.label = lab;
         return o;
       });
     return {
@@ -1352,10 +1525,34 @@ PG.panel = (() => {
   function renderQuests() {
     const list = el('questList');
     const meta = el('questMeta');
+
+    // Widget sidebar („Zadania Billa”) — widoczny na każdym ekranie.
+    let sidebarHtml = '';
+    const sq = PG.quest.sidebar;
+    if (sq && sq.active) {
+      const type = sq.goal.parsed.ok ? sq.goal.parsed.type : 'UNKNOWN_GOAL';
+      const chip = sq.goal.status === 'done'
+        ? '<span class="chip done">GOTOWE</span>'
+        : sq.goal.parsed.ok
+          ? '<span class="chip active">AKTYWNE</span>'
+          : '<span class="chip unknown">NIEZNANY</span>';
+      const prog = sq.goal.progress
+        ? `<span class="prog">${sq.goal.progress.current}/${sq.goal.progress.total}</span>`
+        : '';
+      sidebarHtml = `<div class="quest">
+        <div class="quest-title">📌 ${escapeHtml(sq.title || '?')}
+          <span class="muted" style="font-weight:400"> · ${escapeHtml(sq.tierArea || '')}</span></div>
+        <div class="goal">${chip} ${escapeHtml(sq.goal.text)}${prog}
+          <span class="prog">kroki ${sq.steps.done}/${sq.steps.total ?? '?'}${sq.steps.active ? ` (aktywny #${sq.steps.active})` : ''}</span></div>
+        <div class="goal muted" style="font-size:10.5px">typ: ${escapeHtml(type)}${sq.rewards ? ` · ${escapeHtml(sq.rewards)}` : ''}</div>
+      </div>`;
+    }
+
     const data = PG.quest.last;
     if (!data) {
-      meta.textContent = '';
-      list.innerHTML = '<div class="empty">Brak danych — kliknij „Skan questów”.</div>';
+      meta.textContent = sq && sq.active ? 'widget sidebar' : '';
+      list.innerHTML = sidebarHtml ||
+        '<div class="empty">Brak danych — kliknij „Skan questów”.</div>';
       return;
     }
     meta.textContent = data.unknownCount
@@ -1377,7 +1574,7 @@ PG.panel = (() => {
       return `<div class="goal">#${g.index} ${chip} ${escapeHtml(text)}${prog}${notes}</div>`;
     }).join('');
 
-    list.innerHTML = `<div class="quest">
+    list.innerHTML = sidebarHtml + `<div class="quest">
       <div class="quest-title">${escapeHtml(data.title || '(bez tytułu)')}</div>
       ${goalsHtml || '<div class="empty">Brak celów</div>'}
     </div>`;
@@ -1472,6 +1669,29 @@ PG.main = (() => {
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
 
+  // ── quest-driven location (WALK_IN z widgetu sidebar) ────────────────────
+
+  const LOC_KEY = 'pg-bot-loc';
+
+  function currentLoc() {
+    try { return localStorage.getItem(LOC_KEY) || ''; } catch (_) { return ''; }
+  }
+
+  function setCurrentLoc(v) {
+    try { localStorage.setItem(LOC_KEY, v); } catch (_) { /* ignore */ }
+  }
+
+  /** Lokacja wymagana przez aktywny cel questa (typ WALK_IN), albo null. */
+  function questWalkTarget() {
+    if (!PG.config.questLocation) return null;
+    const sq = PG.quest.sidebar;
+    if (!sq || !sq.active || !sq.goal || !sq.goal.parsed || !sq.goal.parsed.ok) return null;
+    if (sq.goal.parsed.type !== 'WALK_IN') return null;
+    if (sq.goal.status === 'done') return null;
+    if (sq.goal.progress && sq.goal.progress.current >= sq.goal.progress.total) return null;
+    return sq.goal.parsed.location;
+  }
+
   // ── detekcja ekranu ───────────────────────────────────────────────────────
 
   function detectScreen() {
@@ -1513,7 +1733,10 @@ PG.main = (() => {
     const cfg = PG.config;
 
     sm.register('SCANNING', () => {
-      if (cfg.autoQuests) PG.quest.scan();
+      if (cfg.autoQuests) {
+        PG.quest.scan();
+        PG.quest.scanSidebar();
+      }
 
       const screen = detectScreen();
       if (screen !== lastScreen.value) {
@@ -1538,11 +1761,13 @@ PG.main = (() => {
       if (screen === 'walk_ready') { sm.set('WANDER', 'rozpoznany ekran: wędrówka'); return; }
 
       if (screen === 'kokpit') {
-        if (cfg.walkLocation && cfg.autoWalk) {
+        // Priorytet: cel questu WALK_IN > ręcznie ustawiona lokacja startowa.
+        const target = questWalkTarget() || cfg.walkLocation || '';
+        if (target && cfg.autoWalk) {
           const now = Date.now();
           if (now - sess.lastLoc > 4000) {
             sess.lastLoc = now;
-            PG.actions.walkLocation(cfg.walkLocation);
+            if (PG.actions.walkLocation(target)) setCurrentLoc(target);
           }
         }
         return; // zostajemy w SCANNING — czekamy na nawigację / akcję
@@ -1569,10 +1794,26 @@ PG.main = (() => {
         sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);
         return;
       }
-      const now = Date.now();
-      if (now - sess.lastWalk < 2000) return; // nie klikaj szybciej niż co 2 s
+
+      // Quest wymaga innej lokacji niż bieżąca? Przełącz kartę lokacji.
+      const target = questWalkTarget();
+      if (target && currentLoc() !== target) {
+        const now = Date.now();
+        if (now - sess.lastLoc > 4000) {
+          sess.lastLoc = now;
+          if (PG.actions.walkLocation(target)) {
+            PG.logger.push('quest_location_sync', { target, previous: currentLoc() });
+            setCurrentLoc(target);
+            return; // klik startuje wędrówkę w nowej lokacji
+          }
+        }
+        // klik nieudany — nie blokujemy pętli, spróbujemy za chwilę
+      }
+
+      const now2 = Date.now();
+      if (now2 - sess.lastWalk < 2000) return; // nie klikaj szybciej niż co 2 s
       if (cfg.autoWalk) {
-        sess.lastWalk = now;
+        sess.lastWalk = now2;
         if (!PG.actions.walkAgain()) {
           sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie”');
         }

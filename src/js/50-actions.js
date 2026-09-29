@@ -17,6 +17,7 @@
 
 PG.actions = (() => {
   let lastActionAt = 0;
+  let lastFail = '';
 
   function noteAction() {
     lastActionAt = Date.now();
@@ -194,15 +195,49 @@ PG.actions = (() => {
       (x) => x.name.localeCompare(name, 'pl', { sensitivity: 'base' }) === 0
     );
     if (!loc || loc.el.disabled) {
-      PG.logger.push('location_not_found', {
-        wanted: name,
-        have: listLocations().map((x) => x.name),
-      });
+      if (lastFail !== name) {
+        lastFail = name;
+        PG.logger.push('location_not_found', {
+          wanted: name,
+          have: listLocations().map((x) => x.name),
+        });
+      }
       return false;
     }
+    lastFail = '';
     noteAction();
     loc.el.click();
     PG.logger.action('location_walk_started', true, { name: loc.name, cost: loc.cost });
+    return true;
+  }
+
+  function isVisible(el) {
+    return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+  }
+
+  /**
+   * Otwórz pełny widok questów (zakładka Billa w sidebarze).
+   * Eksperymentalne: nie wiemy jeszcze, czy to nawigacja, czy panel —
+   * dlatego klik jest logowany, a następnie użytkownik robi snapshot.
+   */
+  function openQuestTab() {
+    const candidates = [
+      document.getElementById('collapsed-player-sidebar-bill-tab'),
+      ...document.querySelectorAll('[id$="-bill-tab"]'),
+      ...document.querySelectorAll('[aria-label*="bill" i], [title*="bill" i]'),
+      ...document.querySelectorAll('[aria-label*="Zadania" i], [title*="Zadania" i]'),
+    ].filter(Boolean);
+    const el = candidates.find(isVisible) || candidates[0];
+    if (!el) {
+      PG.logger.push('quest_tab_not_found', {});
+      return false;
+    }
+    noteAction();
+    el.click();
+    PG.logger.action('open_quest_view', true, {
+      via: el.id || el.getAttribute('aria-label') || el.getAttribute('title') || el.tagName,
+      wasVisible: isVisible(el),
+    });
     return true;
   }
 
@@ -211,6 +246,7 @@ PG.actions = (() => {
     parseAP, parseBalls, isShinyEncounter, ballCatalog,
     teamButtons, peekTeam, listLocations,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, walkLocation,
+    openQuestTab, isVisible,
     // stuby do wypełnienia (ekwipunek, questy):
     evolveTeam: () => { PG.logger.action('evolve', false, { stub: true }); return false; },
     sellPokemon: () => { PG.logger.action('sell', false, { stub: true }); return false; },

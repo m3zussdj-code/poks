@@ -36,6 +36,7 @@ PG.panel = (() => {
     ['autoHeal', 'Picie drinków'],
     ['autoManage', 'Ewolucja/sprzedaż'],
     ['autoResume', 'Wznów po odświeżeniu'],
+    ['questLocation', 'Cel z questa → lokacja'],
     ['pauseOnSpecial', 'Pauza: shiny/tutor'],
     ['debugConsole', 'Log do konsoli'],
   ];
@@ -174,6 +175,7 @@ PG.panel = (() => {
             <button class="act" id="btnPause">⏸ Pauza</button>
             <button class="act" id="btnStop">⏹ Stop</button>
             <button class="act" id="btnScan">🔍 Skan questów</button>
+            <button class="act" id="btnQuestView">🗺 Pełny widok</button>
           </div>
 
           <div class="toggles" id="toggles"></div>
@@ -246,6 +248,11 @@ PG.panel = (() => {
     el('btnScan').onclick = () => {
       const r = PG.quest.scan();
       if (!r) appendLogRow({ ts: new Date().toISOString(), event: 'quest_scan', msg: 'nie znaleziono kontenera questów — zobacz selector_miss' });
+    };
+
+    el('btnQuestView').onclick = () => {
+      const ok = PG.actions.openQuestTab();
+      flash(el('btnQuestView'), ok ? '🗺 Otwieram…' : '🗺 Nie znaleziono zakładki');
     };
 
     el('btnCopy').onclick = async () => {
@@ -359,6 +366,8 @@ PG.panel = (() => {
           cls: pgText(b.className, 100),
         };
         if (b.tagName === 'A') o.href = b.getAttribute('href');
+        const lab = b.getAttribute('aria-label') || b.getAttribute('title');
+        if (lab) o.label = lab;
         return o;
       });
     return {
@@ -419,10 +428,34 @@ PG.panel = (() => {
   function renderQuests() {
     const list = el('questList');
     const meta = el('questMeta');
+
+    // Widget sidebar („Zadania Billa”) — widoczny na każdym ekranie.
+    let sidebarHtml = '';
+    const sq = PG.quest.sidebar;
+    if (sq && sq.active) {
+      const type = sq.goal.parsed.ok ? sq.goal.parsed.type : 'UNKNOWN_GOAL';
+      const chip = sq.goal.status === 'done'
+        ? '<span class="chip done">GOTOWE</span>'
+        : sq.goal.parsed.ok
+          ? '<span class="chip active">AKTYWNE</span>'
+          : '<span class="chip unknown">NIEZNANY</span>';
+      const prog = sq.goal.progress
+        ? `<span class="prog">${sq.goal.progress.current}/${sq.goal.progress.total}</span>`
+        : '';
+      sidebarHtml = `<div class="quest">
+        <div class="quest-title">📌 ${escapeHtml(sq.title || '?')}
+          <span class="muted" style="font-weight:400"> · ${escapeHtml(sq.tierArea || '')}</span></div>
+        <div class="goal">${chip} ${escapeHtml(sq.goal.text)}${prog}
+          <span class="prog">kroki ${sq.steps.done}/${sq.steps.total ?? '?'}${sq.steps.active ? ` (aktywny #${sq.steps.active})` : ''}</span></div>
+        <div class="goal muted" style="font-size:10.5px">typ: ${escapeHtml(type)}${sq.rewards ? ` · ${escapeHtml(sq.rewards)}` : ''}</div>
+      </div>`;
+    }
+
     const data = PG.quest.last;
     if (!data) {
-      meta.textContent = '';
-      list.innerHTML = '<div class="empty">Brak danych — kliknij „Skan questów”.</div>';
+      meta.textContent = sq && sq.active ? 'widget sidebar' : '';
+      list.innerHTML = sidebarHtml ||
+        '<div class="empty">Brak danych — kliknij „Skan questów”.</div>';
       return;
     }
     meta.textContent = data.unknownCount
@@ -444,7 +477,7 @@ PG.panel = (() => {
       return `<div class="goal">#${g.index} ${chip} ${escapeHtml(text)}${prog}${notes}</div>`;
     }).join('');
 
-    list.innerHTML = `<div class="quest">
+    list.innerHTML = sidebarHtml + `<div class="quest">
       <div class="quest-title">${escapeHtml(data.title || '(bez tytułu)')}</div>
       ${goalsHtml || '<div class="empty">Brak celów</div>'}
     </div>`;

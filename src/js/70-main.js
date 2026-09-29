@@ -39,6 +39,29 @@ PG.main = (() => {
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
 
+  // ── quest-driven location (WALK_IN z widgetu sidebar) ────────────────────
+
+  const LOC_KEY = 'pg-bot-loc';
+
+  function currentLoc() {
+    try { return localStorage.getItem(LOC_KEY) || ''; } catch (_) { return ''; }
+  }
+
+  function setCurrentLoc(v) {
+    try { localStorage.setItem(LOC_KEY, v); } catch (_) { /* ignore */ }
+  }
+
+  /** Lokacja wymagana przez aktywny cel questa (typ WALK_IN), albo null. */
+  function questWalkTarget() {
+    if (!PG.config.questLocation) return null;
+    const sq = PG.quest.sidebar;
+    if (!sq || !sq.active || !sq.goal || !sq.goal.parsed || !sq.goal.parsed.ok) return null;
+    if (sq.goal.parsed.type !== 'WALK_IN') return null;
+    if (sq.goal.status === 'done') return null;
+    if (sq.goal.progress && sq.goal.progress.current >= sq.goal.progress.total) return null;
+    return sq.goal.parsed.location;
+  }
+
   // ── detekcja ekranu ───────────────────────────────────────────────────────
 
   function detectScreen() {
@@ -80,7 +103,10 @@ PG.main = (() => {
     const cfg = PG.config;
 
     sm.register('SCANNING', () => {
-      if (cfg.autoQuests) PG.quest.scan();
+      if (cfg.autoQuests) {
+        PG.quest.scan();
+        PG.quest.scanSidebar();
+      }
 
       const screen = detectScreen();
       if (screen !== lastScreen.value) {
@@ -105,11 +131,13 @@ PG.main = (() => {
       if (screen === 'walk_ready') { sm.set('WANDER', 'rozpoznany ekran: wędrówka'); return; }
 
       if (screen === 'kokpit') {
-        if (cfg.walkLocation && cfg.autoWalk) {
+        // Priorytet: cel questu WALK_IN > ręcznie ustawiona lokacja startowa.
+        const target = questWalkTarget() || cfg.walkLocation || '';
+        if (target && cfg.autoWalk) {
           const now = Date.now();
           if (now - sess.lastLoc > 4000) {
             sess.lastLoc = now;
-            PG.actions.walkLocation(cfg.walkLocation);
+            if (PG.actions.walkLocation(target)) setCurrentLoc(target);
           }
         }
         return; // zostajemy w SCANNING — czekamy na nawigację / akcję
@@ -136,10 +164,26 @@ PG.main = (() => {
         sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);
         return;
       }
-      const now = Date.now();
-      if (now - sess.lastWalk < 2000) return; // nie klikaj szybciej niż co 2 s
+
+      // Quest wymaga innej lokacji niż bieżąca? Przełącz kartę lokacji.
+      const target = questWalkTarget();
+      if (target && currentLoc() !== target) {
+        const now = Date.now();
+        if (now - sess.lastLoc > 4000) {
+          sess.lastLoc = now;
+          if (PG.actions.walkLocation(target)) {
+            PG.logger.push('quest_location_sync', { target, previous: currentLoc() });
+            setCurrentLoc(target);
+            return; // klik startuje wędrówkę w nowej lokacji
+          }
+        }
+        // klik nieudany — nie blokujemy pętli, spróbujemy za chwilę
+      }
+
+      const now2 = Date.now();
+      if (now2 - sess.lastWalk < 2000) return; // nie klikaj szybciej niż co 2 s
       if (cfg.autoWalk) {
-        sess.lastWalk = now;
+        sess.lastWalk = now2;
         if (!PG.actions.walkAgain()) {
           sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie”');
         }

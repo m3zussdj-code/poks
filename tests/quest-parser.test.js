@@ -150,6 +150,42 @@ eq(p2.goals[4].parsed.target, 'Shiny Growlithe', ' target celu #5');
 // linia nagród nie może trafić do notatek:
 assert(!JSON.stringify(p2.goals).includes('Power Drink'), ' nagrody poza celami');
 
+// ── Quest 3: widget sidebar („Zadania Billa”) ─────────────────────────────
+const sidebarWidget = `
+Zadania Billa
+Aktywne zadanie i jego nagrody
+Eksperckie Trakt Prizmański
+Rozliczający raport wyzwań
+Nagrody -10%
+Wykonaj 540 wędrówek w lokacji Mroczne Miasto
+Aktywne
+74/540
+x
+Nagrody 51x Power Drink 2,630,790 ¥
+`.trim();
+
+console.log('6. parseSidebarQuest() — widget „Zadania Billa”');
+const sq = PG.quest.parseSidebarQuest(sidebarWidget, [
+  { done: true, active: false },
+  { done: true, active: false },
+  { done: true, active: false },
+  { done: true, active: false },
+  { done: false, active: true },
+]);
+assert(sq.active, ' quest aktywny');
+eq(sq.title, 'Rozliczający raport wyzwań', ' tytuł questu');
+eq(sq.tierArea, 'Eksperckie Trakt Prizmański', ' tier + obszar');
+eq(sq.goal.text, 'Wykonaj 540 wędrówek w lokacji Mroczne Miasto', ' tekst celu');
+eq(sq.goal.parsed.type, 'WALK_IN', ' typ kanoniczny celu');
+eq(sq.goal.parsed.location, 'Mroczne Miasto', ' lokalizacja z questa');
+eq(sq.goal.parsed.count, 540, ' limit');
+eq(sq.goal.status, 'active', ' status');
+eq(sq.goal.progress, { current: 74, total: 540 }, ' postęp');
+eq(sq.steps, { total: 5, done: 4, active: 5 }, ' kroki');
+assert(/^Nagrody 51x Power Drink/.test(sq.rewards), ' nagrody');
+assert(!/Nagrody -10%/.test(sq.rewards || ''), ' „Nagrody -10%” nie udaje nagród');
+eq(PG.quest.parseSidebarQuest('Brak tu żadnego celu.'), { active: false }, ' brak celu → active:false');
+
 // ── podsumowanie ────────────────────────────────────────────────────────────
 console.log(`\n${failures.length === 0 ? '✅' : '❌'} Wszystkie testy: ${passed} OK, ${failures.length} błędów`);
 process.exit(failures.length === 0 ? 0 : 1);

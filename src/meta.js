@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.2.0
+// @version      0.3.0
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*

@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.2.0',
+  version: '0.3.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -27,6 +27,7 @@ const PG = {
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
     autoManage: false,     // ewolucja + sprzedaż — wymaga potwierdzenia UI
     autoResume: true,      // wznowienie działania po odświeżeniu strony
+    questLocation: true,   // cel z questa WALK_IN steruje wyborem lokacji
     pauseOnSpecial: true,  // shiny / tutor → zatrzymaj się i pokaż NEEDS_REVIEW
     debugConsole: true,    // lustrzane logi do konsoli przeglądarki
 

@@ -180,6 +180,131 @@ PG.quest = (() => {
 
   // ───────────────────────── warstwa DOM (eskstrakcja) ──────────────────────
 
+  // ───────────────── sidebar questów („Zadania Billa”) ─────────────────────
+
+  /**
+   * Czysty parser widgetu questowego w sidebarze (bez DOM-u → testy).
+   * Wejście: innerText widgetu + kroki z klas CSS (is-complete / is-active).
+   *
+   * Typowa struktura:
+   *   Zadania Billa
+   *   Aktywne zadanie i jego nagrody
+   *   Eksperckie Trakt Prizmański      ← tier + obszar
+   *   Rozliczający raport wyzwań       ← tytuł
+   *   Nagrody -10%
+   *   Wykonaj 540 wędrówek w lokacji Mroczne Miasto   ← cel (verb!)
+   *   Aktywne / 74/540 / x
+   *   Nagrody 51x Power Drink 2,630,790 ¥
+   */
+  function parseSidebarQuest(text, steps = []) {
+    const lines = String(text ?? '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const goalIdx = lines.findIndex((l) => GOAL_VERBS.test(normalize(l)));
+    if (goalIdx < 0) return { active: false };
+
+    const anchor = lines.findIndex((l) => /^Aktywne zadanie/i.test(l));
+    const goalText = normalize(lines[goalIdx]);
+    const parsed = classify(goalText);
+
+    let status = 'unknown';
+    let progress = null;
+    for (let i = goalIdx + 1; i < Math.min(lines.length, goalIdx + 6); i++) {
+      const line = lines[i];
+      if (/^Nagrody/i.test(line)) break;
+      const st = parseStatus(line);
+      if (st) { status = st; continue; }
+      const pr = parseProgress(line);
+      if (pr && !progress) { progress = pr; break; }
+    }
+
+    const rewards = lines.slice(goalIdx).find((l) => /^Nagrody\s+\d/.test(l)) || null;
+    const title = (anchor >= 0 && lines[anchor + 2]) || lines[goalIdx - 2] || null;
+    const tierArea = (anchor >= 0 && lines[anchor + 1]) || null;
+
+    const activeIdx = steps.findIndex((s) => s.active);
+    return {
+      active: true,
+      title,
+      tierArea,
+      goal: { text: goalText, parsed, status, progress },
+      steps: {
+        total: steps.length || null,
+        done: steps.filter((s) => s.done).length,
+        active: activeIdx >= 0 ? activeIdx + 1 : null,
+      },
+      rewards,
+    };
+  }
+
+  /** Ostatni stan widgetu sidebar + odcisk (do logowania tylko przy zmianie). */
+  let sidebar = null;
+  let sidebarFp = null;
+
+  /**
+   * Odczytaj widget questów ze strony (kroki mają klasy CSS gry).
+   * Wykrywany na KAŻDYM ekranie — sidebar jest globalny.
+   */
+  function scanSidebar() {
+    const step = document.querySelector('.player-sidebar-quest-step');
+    if (!step) {
+      if (sidebar) {
+        sidebar = null;
+        sidebarFp = null;
+        PG.logger.push('sidebar_quest_cleared', {});
+        if (PG.panel) PG.panel.render();
+      } else {
+        PG.logger.selectorMiss('sidebar-quest-widget');
+      }
+      return null;
+    }
+
+    // Najmniejszy przodek zawierający nagłówek „Zadania …”:
+    let cont = null;
+    for (let el = step, i = 0; el && i < 8; el = el.parentElement, i += 1) {
+      const t = el.innerText || '';
+      if (/Zadania\s/.test(t) && t.length < 2500) { cont = el; break; }
+    }
+    if (!cont) {
+      PG.logger.selectorMiss('sidebar-quest-widget', { hint: 'kroki znalezione, brak nadrzędnego z nagłówkiem' });
+      return null;
+    }
+
+    const steps = [...cont.querySelectorAll('.player-sidebar-quest-step')].map((s) => ({
+      done: s.classList.contains('is-complete'),
+      active: s.classList.contains('is-active') || s.classList.contains('is-selected'),
+    }));
+
+    const parsed = parseSidebarQuest(cont.innerText, steps);
+    sidebar = { ts: new Date().toISOString(), ...parsed };
+
+    const fp = JSON.stringify([
+      parsed.active, parsed.title,
+      parsed.goal && parsed.goal.text,
+      parsed.goal && parsed.goal.progress,
+      parsed.steps,
+    ]);
+    if (fp !== sidebarFp) {
+      sidebarFp = fp;
+      if (parsed.active) {
+        PG.logger.push('sidebar_quest', {
+          title: parsed.title,
+          tierArea: parsed.tierArea,
+          goal: parsed.goal.text,
+          type: parsed.goal.parsed.type,
+          status: parsed.goal.status,
+          progress: parsed.goal.progress,
+          steps: parsed.steps,
+          rewards: parsed.rewards,
+        });
+        if (PG.panel) PG.panel.render();
+      }
+    }
+    return sidebar;
+  }
+
   /** Ostatni wynik skanu — panel to renderuje. */
   let last = null;
 
@@ -211,6 +336,8 @@ PG.quest = (() => {
     return last;
   }
 
-  return { normalize, classify, parseQuestText, parseStatus, parseProgress, scan, PATTERNS,
-    get last() { return last; } };
+  return { normalize, classify, parseQuestText, parseStatus, parseProgress,
+    parseSidebarQuest, scanSidebar, scan, PATTERNS,
+    get last() { return last; },
+    get sidebar() { return sidebar; } };
 })();
