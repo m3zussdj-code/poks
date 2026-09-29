@@ -1,6 +1,6 @@
 # PG Edu Bot — skompaktowany stan ( czytaj TO zamiast full memory )
 
-Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **3d43aaa = v0.10.0**, testy **76/76 + driver 14/14**.
+Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **26841ef = v0.10.1**, testy **76/76 + driver 16/16**.
 Serwer dist: port **8377** (statyczny `python3 -m http.server` → `dist/`); przed podaniem URL → `curl -sf localhost:8377/pokeglory-bot.user.js | head -4`, restart = `start_process`.
 
 ## Konwencje (twarde)
@@ -69,6 +69,19 @@ quest tab); jedyny `.click()` w 50 to fallback w fire. Panel: toggle `cdpBridge`
 Chrome: `--remote-debugging-port=9222` (osobny profil z TM+login albo restart Chrome).
 build.sh → `cp driver/pg-cdp-driver.mjs dist/`. Testy: quest 76/76, `tests/driver.test.mjs`
 (mock CDP: HTTP+WS od zera) 14/14. **Bez drivera bot działa jak dotychczas (fallback).**
+
+## v0.10.1 — ZROBIONE (`26841ef`, naprawa łapania — CATCH)
+Z eksportu użytkownika: (1) ack nie zerował `sess.throws` → natychmiastowy re-NEEDS_REVIEW
+(2 ms) — **patch `sm.acknowledge` w registerStates() zeruje throws/unverifiedTries/pendingThrow**;
+(2) rzuty „ok” bez zużycia piłek (qty stałe) → **throwBall zwraca `{name, qty}`**, CATCH weryfikuje
+po 1,2 s: qty spadła → `throws++` (do max); bez zmian → push `throw_unverified` + limit
+`2×maxThrows` → NEEDS_REVIEW „rzuty nie rejestrują się — sprawdź driver CDP”; karta zniknęła
+przy pełnej liście = qty 0 = zarejestrowany; (3) gap: 1. rzut `cooldowns.throw`, kolejne
+`graceMs` (2500). Driver: clamp koordynatów do viewportu z poll (`innerWidth/Height` w expr),
+błąd dispatcha → lokalny catch + ponowienie (bez resetu sesji, żądanie żyje do MAX_AGE 3 s);
+userscript: event `bridge_undelivered` gdy żądanie >4 s niezniknięte. **Diagnoza: jeśli export
+pokaże `throw_unverified` bez `bridge_undelivered` — problem po stronie gry/timing; z
+`bridge_undelivered` — driver nie dispatchuje (patrz terminal drivera).**
 
 ## Otwarte (nie zapomnieć)
 1. v0.5.0: co się pojawia PO „Zbierz jagody" (jeśli NEEDS_REVIEW → snapshot).
