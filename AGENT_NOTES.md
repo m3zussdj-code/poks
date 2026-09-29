@@ -1,6 +1,6 @@
 # PG Edu Bot — skompaktowany stan ( czytaj TO zamiast full memory )
 
-Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **26841ef = v0.10.1**, testy **76/76 + driver 16/16**.
+Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **1500124 = v0.10.2**, testy **80/80 + driver 16/16**.
 Serwer dist: port **8377** (statyczny `python3 -m http.server` → `dist/`); przed podaniem URL → `curl -sf localhost:8377/pokeglory-bot.user.js | head -4`, restart = `start_process`.
 
 ## Konwencje (twarde)
@@ -82,6 +82,16 @@ błąd dispatcha → lokalny catch + ponowienie (bez resetu sesji, żądanie ży
 userscript: event `bridge_undelivered` gdy żądanie >4 s niezniknięte. **Diagnoza: jeśli export
 pokaże `throw_unverified` bez `bridge_undelivered` — problem po stronie gry/timing; z
 `bridge_undelivered` — driver nie dispatchuje (patrz terminal drivera).**
+
+## v0.10.2 — ZROBIONE (`1500124`, klik tylko w widoczne/klikalne miejsce)
+Diagnoza user: klikaliśmy w miejsce niewidoczne na ekranie (rect z getBoundingClientRect
+poza viewportem → clamp lądował na krawędzi = zły element). **Bez pełnego ekranu** — CDP
+klika w przestrzeni viewportu karty, nie ekranu OS. `fire()`: (1) rect poza kadrą →
+`scrollIntoView({block:'center', behavior:'instant'})` + re-rect; (2) `pickPoint(rect, vw, vh, hit)`
+— hit-test `document.elementFromPoint` (wykrywa zasłonięcie: panel, overlay), rect przycinany
+do widocznego wycinka; (3) null → fallback lokalny + `bridge_fallback{not_clickable}`.
+`pickPoint` czysty (callback `hit`) — testy. Selector `battle-skip-button` +
+`[data-tutorial-target="battle-jump-to-end"]` (HTML od usera) przed tekstem.
 
 ## Otwarte (nie zapomnieć)
 1. v0.5.0: co się pojawia PO „Zbierz jagody" (jeśli NEEDS_REVIEW → snapshot).
