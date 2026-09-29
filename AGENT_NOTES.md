@@ -1,6 +1,6 @@
 # PG Edu Bot — skompaktowany stan ( czytaj TO zamiast full memory )
 
-Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **c8fa261 = v0.9.0**, testy **74/74**.
+Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **3d43aaa = v0.10.0**, testy **76/76 + driver 14/14**.
 Serwer dist: port **8377** (statyczny `python3 -m http.server` → `dist/`); przed podaniem URL → `curl -sf localhost:8377/pokeglory-bot.user.js | head -4`, restart = `start_process`.
 
 ## Konwencje (twarde)
@@ -55,7 +55,20 @@ autoHeal off → `walkAgain()` (pomijamy, bez pętli FOSSIL↔WANDER). `parseDig
   w tym wycinku — warning + telemetria.
 - Czyste: `navigator.webdriver`/selenium/playwright globals w normalnej TM (automationScore 0);
   sygnały `dom.*` (+35/+65) tylko dla modyfikujących DOM gry — my read/click → nie zapalają się.
-- User dostał ostrzeżenie na kliknięciu drużyny w ENCOUNTER — wyjaśnić, decyzja: bez zmian (rekomendacja).
+- User dostał ostrzeżenie na kliknięciu drużyny w ENCOUNTER → **ROZWIĄZANE w v0.10.0 (CDP driver)**.
+
+## v0.10.0 — ZROBIONE (`3d43aaa`, klik przez CDP = trusted events)
+Mostek: userscript `fire(el)` → `window.__pgClick {id,x,y,ts}` (punkt przez czysty
+`bridgePoint`, 15% margines) → `driver/pg-cdp-driver.mjs` (Node ≥21, zero dep, PG_CDP/PG_POLL)
+odczytuje przez CDP `Runtime.evaluate` (poll 100 ms) → `Input.dispatchMouseEvent`: 3–5
+mouseMoved + pressed/released (clickCount 1) = **isTrusted true, score 0**. Heartbeat
+`window.__pgBridge {ok,ts}` <5 s = świeżość; stare żądania >3 s pomijane; karta w tle →
+`Target.activateTarget`. Fallback: driver nie żyje → `el.click()` + `bridge_fallback` (60 s).
+Wszystkie kliknięcia gry przez `fire()` (click(), drużyna, piłki, team-heal, dialog, lokalizacja,
+quest tab); jedyny `.click()` w 50 to fallback w fire. Panel: toggle `cdpBridge` + CDP✓/✗ w badge.
+Chrome: `--remote-debugging-port=9222` (osobny profil z TM+login albo restart Chrome).
+build.sh → `cp driver/pg-cdp-driver.mjs dist/`. Testy: quest 76/76, `tests/driver.test.mjs`
+(mock CDP: HTTP+WS od zera) 14/14. **Bez drivera bot działa jak dotychczas (fallback).**
 
 ## Otwarte (nie zapomnieć)
 1. v0.5.0: co się pojawia PO „Zbierz jagody" (jeśli NEEDS_REVIEW → snapshot).
