@@ -7,11 +7,12 @@
  */
 
 const PG = {
-  version: '0.1.1',
+  version: '0.2.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
-   * reszta to parametry techniczne.
+   * reszta to parametry techniczne. Całość zapisuje się w localStorage
+   * (persistencja po odświeżeniu strony).
    */
   config: {
     tickMs: 1500,          // jak często maszyna stanów wykonuje tick
@@ -20,12 +21,24 @@ const PG = {
 
     // przełączniki widoczne w panelu:
     autoWalk: true,        // wędrówki ("Wędruj ponownie")
-    autoCatch: false,      // łapanie — włączymy, gdy poznamy DOM ekranu spotkania
+    autoCatch: true,       // rzut piłką po wygranej walce
+    autoSkipBattle: true,  // klikaj "Przejdź do końca walki"
     autoQuests: true,      // skan i rozliczanie questów
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
-    autoManage: false,     // ewolucja + sprzedaż — wymaga DOM ekwipunku
+    autoManage: false,     // ewolucja + sprzedaż — wymaga potwierdzenia UI
+    autoResume: true,      // wznowienie działania po odświeżeniu strony
     pauseOnSpecial: true,  // shiny / tutor → zatrzymaj się i pokaż NEEDS_REVIEW
     debugConsole: true,    // lustrzane logi do konsoli przeglądarki
+
+    // łapanie / walka:
+    teamSlot: 1,           // który Pokémon z drużyny ma walczyć (1-based)
+    walkLocation: '',      // start z kokpitu: '' = ręcznie, np. 'Mroczne Miasto'
+    balls: {               // priorytet 1, priorytet 2 (zapasowy przy braku P1)
+      normal: ['Level Ball', 'Poké Ball'],
+      shiny: ['Shiny Ball', 'Master Ball'],
+    },
+    maxThrows: 3,          // maks. rzutów w jednej potyczce (potem NEEDS_REVIEW)
+    healBelow: 6,          // pij drinki, gdy PA < tej wartości (max koszt karty = 5)
   },
 };
 

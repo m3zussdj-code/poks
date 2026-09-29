@@ -18,6 +18,7 @@ PG.panel = (() => {
     STOPPED: ['gray', 'STOPPED'],
     SCANNING: ['blue', 'SCANNING'],
     WANDER: ['green', 'WANDER'],
+    ENCOUNTER: ['orange', 'ENCOUNTER'],
     CATCH: ['orange', 'CATCH'],
     BATTLE: ['orange', 'BATTLE'],
     QUEST_TURNIN: ['teal', 'QUEST_TURNIN'],
@@ -29,10 +30,12 @@ PG.panel = (() => {
 
   const TOGGLES = [
     ['autoWalk', 'Wędrówki'],
-    ['autoCatch', 'Łapanie'],
+    ['autoCatch', 'Łapanie po walce'],
+    ['autoSkipBattle', 'Pomiń animację walki'],
     ['autoQuests', 'Questy'],
     ['autoHeal', 'Picie drinków'],
     ['autoManage', 'Ewolucja/sprzedaż'],
+    ['autoResume', 'Wznów po odświeżeniu'],
     ['pauseOnSpecial', 'Pauza: shiny/tutor'],
     ['debugConsole', 'Log do konsoli'],
   ];
@@ -133,6 +136,14 @@ PG.panel = (() => {
     .log-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .muted { color: #5b6274; font-size: 11px; font-style: italic; }
     .empty { color: #5b6274; font-size: 11px; }
+    .field { font-size: 11px; color: #aab1c0; display: flex; flex-direction: column; gap: 3px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; }
+    select, input[type="number"] {
+      background: #232936; color: #e5e9f0; border: 1px solid #394152;
+      border-radius: 6px; padding: 4px 6px; font-size: 12px; width: 100%;
+      font-family: inherit;
+    }
+    select:focus, input:focus { outline: 1px solid #3b82f6; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-thumb { background: #2a2f3a; border-radius: 4px; }
   `;
@@ -166,6 +177,37 @@ PG.panel = (() => {
           </div>
 
           <div class="toggles" id="toggles"></div>
+
+          <div>
+            <div class="sec-title">Automatyzacja</div>
+            <div class="grid2">
+              <label class="field">Pokémon do walki
+                <select id="selTeam"></select>
+              </label>
+              <label class="field">Lokacja startowa (kokpit)
+                <select id="selLoc"></select>
+              </label>
+            </div>
+            <div class="grid2" style="margin-top:6px">
+              <label class="field">Normalny — priorytet 1
+                <select id="selN1"></select>
+              </label>
+              <label class="field">Normalny — priorytet 2
+                <select id="selN2"></select>
+              </label>
+              <label class="field">Shiny — priorytet 1
+                <select id="selS1"></select>
+              </label>
+              <label class="field">Shiny — priorytet 2
+                <select id="selS2"></select>
+              </label>
+            </div>
+            <div class="grid2" style="margin-top:6px">
+              <label class="field">Max rzutów / potyczkę
+                <input type="number" id="inThrows" min="1" max="10" />
+              </label>
+            </div>
+          </div>
 
           <div>
             <div class="sec-title"><span>Questy</span><span id="questMeta"></span></div>
@@ -226,14 +268,82 @@ PG.panel = (() => {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = !!PG.config[key];
-      cb.onchange = () => {
-        PG.config[key] = cb.checked;
-        PG.logger.push('config_change', { key, value: cb.checked });
-        render();
-      };
+      cb.onchange = () => cfgSet(key, cb.checked, label);
       lab.append(cb, document.createTextNode(label));
       tg.appendChild(lab);
     }
+
+    // Selecty / inputy sekcji „Automatyzacja”:
+    el('selTeam').onchange = (e) => cfgSet('teamSlot', +e.target.value, 'teamSlot');
+    el('selLoc').onchange = (e) => cfgSet('walkLocation', e.target.value, 'walkLocation');
+    el('selN1').onchange = (e) => ballSet('normal', 0, e.target.value);
+    el('selN2').onchange = (e) => ballSet('normal', 1, e.target.value);
+    el('selS1').onchange = (e) => ballSet('shiny', 0, e.target.value);
+    el('selS2').onchange = (e) => ballSet('shiny', 1, e.target.value);
+    el('inThrows').onchange = (e) => {
+      const v = Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 3));
+      cfgSet('maxThrows', v, 'maxThrows');
+    };
+  }
+
+  /** Zapis wartości do konfiguracji + log (persistencja w main). */
+  function cfgSet(key, value, label) {
+    PG.config[key] = value;
+    PG.logger.push('config_change', { key: label || key, value });
+    render();
+  }
+
+  function ballSet(kind, idx, value) {
+    PG.config.balls[kind][idx] = value;
+    PG.logger.push('config_change', { key: `balls.${kind}[${idx}]`, value });
+    render();
+  }
+
+  /** Wypełnij select opcjami (przebudowa tylko przy zmianie „sygnatury”). */
+  function fillSelect(id, opts, value) {
+    const s = el(id);
+    if (!s) return;
+    const sig = opts.map((o) => o.v).join('|');
+    if (s.dataset.sig !== sig) {
+      s.innerHTML = opts
+        .map((o) => `<option value="${escapeHtml(o.v)}">${escapeHtml(o.l)}</option>`)
+        .join('');
+      s.dataset.sig = sig;
+    }
+    s.value = value;
+    // Gdy zapisana wartość nie występuje w opcjach — dopisz ją (nie gubimy np. balli).
+    if (s.value !== value && value) {
+      s.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`);
+      s.value = value;
+    }
+  }
+
+  function syncAutomationUI() {
+    // Pokémon do walki: żywe etykiety z ekranu spotkania albo Slot 1..6.
+    const team = typeof PG.actions.peekTeam === 'function' ? PG.actions.peekTeam() : [];
+    const teamOpts = team.length
+      ? team.map((t) => ({ v: String(t.index), l: `Slot ${t.index} · ${t.text.slice(0, 30)}` }))
+      : Array.from({ length: 6 }, (_, i) => ({ v: String(i + 1), l: `Slot ${i + 1}` }));
+    fillSelect('selTeam', teamOpts, String(PG.config.teamSlot));
+
+    // Lokacje z kart „N PA Nazwa”.
+    const locs = typeof PG.actions.listLocations === 'function' ? PG.actions.listLocations() : [];
+    fillSelect('selLoc',
+      [{ v: '', l: '— ręcznie —' },
+        ...locs.map((x) => ({ v: x.name, l: `${x.name} (${x.cost} PA)` }))],
+      PG.config.walkLocation);
+
+    // Piłki: katalog wykrytych + zapisane preferencje (nic nie gubimy).
+    const balls = [...PG.actions.ballCatalog,
+      ...(PG.config.balls.normal || []),
+      ...(PG.config.balls.shiny || [])].filter(Boolean);
+    const ballOpts = [...new Set(balls)].map((n) => ({ v: n, l: n }));
+    fillSelect('selN1', ballOpts, (PG.config.balls.normal || [])[0] || '');
+    fillSelect('selN2', ballOpts, (PG.config.balls.normal || [])[1] || '');
+    fillSelect('selS1', ballOpts, (PG.config.balls.shiny || [])[0] || '');
+    fillSelect('selS2', ballOpts, (PG.config.balls.shiny || [])[1] || '');
+
+    el('inThrows').value = PG.config.maxThrows;
   }
 
   /** Snapshot ekranu: co bot „widzi” — do diagnostyki nowych ekranów. */
@@ -302,6 +412,8 @@ PG.panel = (() => {
     TOGGLES.forEach(([key], idx) => {
       if (inputs[idx]) inputs[idx].checked = !!PG.config[key];
     });
+
+    syncAutomationUI();
   }
 
   function renderQuests() {

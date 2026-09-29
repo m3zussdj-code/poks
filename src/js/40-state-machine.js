@@ -9,6 +9,7 @@
  *   BATTLE           — walka
  *   QUEST_TURNIN     — odbiór ukończonego questa
  *   HEAL             — picie drinków (odnowa punktów akcji)
+ *   ENCOUNTER        — „Napotkano X!" → wybór Pokémona z drużyny
  *   INVENTORY        — ewolucja / sprzedaż
  *   SPECIAL_ENCOUNTER— shiny, tutor itp. → przepuszcza do NEEDS_REVIEW
  *   NEEDS_REVIEW     — bot nie rozpoznaje sytuacji → CZEKA na człowieka
@@ -90,7 +91,7 @@ PG.sm = (() => {
   }
 
   return {
-    STATES: ['STOPPED', 'SCANNING', 'WANDER', 'CATCH', 'BATTLE',
+    STATES: ['STOPPED', 'SCANNING', 'WANDER', 'ENCOUNTER', 'CATCH', 'BATTLE',
       'QUEST_TURNIN', 'HEAL', 'INVENTORY', 'SPECIAL_ENCOUNTER', 'NEEDS_REVIEW'],
     get state() { return state; },
     get paused() { return paused; },

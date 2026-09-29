@@ -46,6 +46,20 @@ PG.selectors = (() => {
       { sel: 'button', re: /^\d+\s*PA[A-ZŁŚŻŹĆĄĘÓŃ]/ },
     ],
 
+    // ── ekran spotkania / walki / wyniku (snapshoty 2026-09-29, /mapa) ────
+    'encounter-preview': [
+      '[data-pokeglory-integrity-role="encounter-preview"]',
+    ],
+    'team-selection': [
+      '[data-pokeglory-integrity-role="team-selection"]',
+    ],
+    'battle-skip-button': [
+      { sel: 'button', re: /Przejdź do końca walki/ },
+    ],
+    'ball-card': [
+      { sel: 'button', re: /Szansa złapania/i },
+    ],
+
     // ── kandydaci do doprecyzowania po snapshotach innych ekranów ─────────
     'quest-container': [
       '[data-pokeglory-integrity-role*="quest"]',

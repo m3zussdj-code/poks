@@ -1,84 +1,243 @@
 /**
- * 70-main.js — start bota, pętla ticków i handlery stanów.
+ * 70-main.js — start bota, pętla ticków, handlery stanów, persistencja.
  *
- * SCANNING decyduje: skan questów → detekcja ekranu → przejście
- * do znanego stanu albo NEEDS_REVIEW (nieznany ekran).
+ * Detekcja ekranów (v3, oparta o snapshoty z /mapa):
+ *   encounter  → ENCOUNTER (wybór drużyny)
+ *   ball_select→ CATCH     (rzut po wygranej)
+ *   battle     → BATTLE    (skip animacji)
+ *   walk_ready → WANDER
+ *   kokpit     → SCANNING  (opcjonalny start z karty lokacji)
+ *   unknown    → NEEDS_REVIEW (po grace period po ostatnim kliknięciu)
  *
- * Detekcja ekranu jest na razie minimalna (v1) — każdy nowy typ
- * ekranu dopisujemy po analizie snapshotu/selector_miss z telemetrii.
+ * Kolejność detekcji ma znaczenie: walk-again-button obecny jest NA WSZYSTKICH
+ * ekranach mapy, więc encounter/piłki/walka muszą być sprawdzane przed nim.
  */
 
 PG.main = (() => {
   let timer = null;
 
-  // ── detekcja ekranu (v2 — kokpit rozpoznany po szybkich akcjach) ─────────
+  // Sesyjne liczniki (reset przy zmianie ekranu, patrz SCANNING).
+  const sess = {
+    encounterTries: 0,
+    battleTries: 0,
+    throws: 0,
+    healTries: 0,
+    lastTeamClick: 0,
+    lastThrow: 0,
+    lastSkip: 0,
+    lastHeal: 0,
+    lastWalk: 0,
+    lastLoc: 0,
+  };
+
+  const lastScreen = { value: null };
+
+  function resetSessionForScreen() {
+    sess.encounterTries = 0;
+    sess.battleTries = 0;
+    sess.throws = 0;
+    // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
+  }
+
+  // ── detekcja ekranu ───────────────────────────────────────────────────────
 
   function detectScreen() {
+    if (PG.selectors.resolve('encounter-preview', { reportMiss: false })) return 'encounter';
+    if (PG.selectors.resolve('team-selection', { reportMiss: false })) return 'encounter';
+    if (PG.actions.parseBalls().length > 0) return 'ball_select';
+    if (PG.selectors.resolve('battle-skip-button', { reportMiss: false })) return 'battle';
     if (PG.selectors.resolve('walk-again-button', { reportMiss: false })) return 'walk_ready';
-    // Kokpit — po URL/tytule (konserwatywnie: szybkie akcje typu „Regeneracja
-    // PA” mogą być globalnym paskiem i NIE mogą udawać kokpitu na innych
-    // ekranach, bo bot przestałby raportować nieznane stany).
     if (location.pathname.startsWith('/kokpit') || /kokpit/i.test(document.title)) return 'kokpit';
-    // TODO: ekran spotkania (catch), walka, strona questów…
     return 'unknown';
   }
 
-  // Ostatnio zalogowany ekran — żeby nie spamować screen_detected co ticka.
-  const lastScreen = { value: null };
+  // ── persistencja konfiguracji i auto-wznowienie ──────────────────────────
+
+  const CFG_KEY = 'pg-bot-config-v1';
+  const RESUME_KEY = 'pg-bot-autostart';
+
+  function loadConfig() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(CFG_KEY) || 'null');
+      if (saved && typeof saved === 'object') {
+        // shallow merge: nowe klucze z builda zostają, stare wartości wracają
+        if (saved.balls && typeof saved.balls === 'object') {
+          saved.balls = { ...PG.config.balls, ...saved.balls };
+        }
+        Object.assign(PG.config, saved);
+      }
+    } catch (_) { /* uszkodzony JSON → domyślne */ }
+  }
+
+  function persistConfig() {
+    try { localStorage.setItem(CFG_KEY, JSON.stringify(PG.config)); } catch (_) { /* quota */ }
+  }
 
   // ── handlery stanów ───────────────────────────────────────────────────────
 
   function registerStates() {
     const sm = PG.sm;
+    const cfg = PG.config;
 
     sm.register('SCANNING', () => {
-      if (PG.config.autoQuests) PG.quest.scan();
+      if (cfg.autoQuests) PG.quest.scan();
 
       const screen = detectScreen();
       if (screen !== lastScreen.value) {
         lastScreen.value = screen;
+        resetSessionForScreen();
         PG.logger.push('screen_detected', { screen, url: location.href });
       }
 
-      if (screen === 'walk_ready') {
-        sm.set('WANDER', 'rozpoznany ekran: wędrówka');
+      // 1) Ekrany akcji — routowane natychmiast, bez przerwy na heal.
+      if (screen === 'encounter') { sm.set('ENCOUNTER', 'spotkanie w dziczy'); return; }
+      if (screen === 'ball_select') { sm.set('CATCH', 'wybór piłki po walce'); return; }
+      if (screen === 'battle') { sm.set('BATTLE', 'walka w toku'); return; }
+
+      // 2) Niskie PA → picie drinków (globalny przycisk „Regeneracja…”).
+      const ap = PG.actions.parseAP();
+      if (cfg.autoHeal && ap && ap.current < cfg.healBelow) {
+        sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);
         return;
       }
+
+      // 3) Znane ekrany bez akcji.
+      if (screen === 'walk_ready') { sm.set('WANDER', 'rozpoznany ekran: wędrówka'); return; }
+
       if (screen === 'kokpit') {
-        // Ekran znany, ale nie mamy jeszcze pewnej automatycznej nawigacji
-        // (karty lokacji „4 PASafrania” czekają na potwierdzenie zachowania).
-        // Zostajemy w SCANNING i czekamy, aż użytkownik nawiguje na ekran
-        // wędrówki albo potwierdzi klik kart.
-        return;
+        if (cfg.walkLocation && cfg.autoWalk) {
+          const now = Date.now();
+          if (now - sess.lastLoc > 4000) {
+            sess.lastLoc = now;
+            PG.actions.walkLocation(cfg.walkLocation);
+          }
+        }
+        return; // zostajemy w SCANNING — czekamy na nawigację / akcję
       }
-      // Nieznany ekran: pełny snapshot do telemetrii + czekamy na człowieka.
-      if (PG.panel) PG.logger.push('screen_unknown_snapshot', {
+
+      // 4) Nieznany ekran — grace period po kliknięciu (gra się jeszcze ładuje).
+      if (PG.actions.sinceLastAction() < 4000) return;
+
+      PG.logger.push('screen_unknown_snapshot', {
         integrityRoles: PG.selectors.integrityRoles(),
         url: location.href,
       });
-      sm.set('NEEDS_REVIEW', `nieznany ekran (${screen}) — prześlij log do agenta`);
+      sm.set('NEEDS_REVIEW', `nieznany ekran — prześlij log do agenta`);
     });
 
     sm.register('WANDER', () => {
-      if (detectScreen() !== 'walk_ready') {
-        sm.set('SCANNING', 'ekran się zmienił po wędrówce');
+      const screen = detectScreen();
+      if (screen !== 'walk_ready') {
+        sm.set('SCANNING', `ekran zmienił się po wędrówce (${screen})`);
         return;
       }
-      if (PG.config.autoWalk) PG.actions.walkAgain();
-      // TODO: gdy autoCatch i wykryty ekran spotkania → CATCH
+      const ap = PG.actions.parseAP();
+      if (cfg.autoHeal && ap && ap.current < cfg.healBelow) {
+        sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);
+        return;
+      }
+      const now = Date.now();
+      if (now - sess.lastWalk < 2000) return; // nie klikaj szybciej niż co 2 s
+      if (cfg.autoWalk) {
+        sess.lastWalk = now;
+        if (!PG.actions.walkAgain()) {
+          sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie”');
+        }
+      }
     });
 
-    sm.register('CATCH', () => {
-      if (!PG.config.autoCatch) {
-        sm.set('NEEDS_REVIEW', 'spotkanie wymaga łapania, a autoCatch jest wyłączone');
+    sm.register('ENCOUNTER', () => {
+      const screen = detectScreen();
+      if (screen !== 'encounter') {
+        sm.set('SCANNING', `ekran spotkania zmienił się (${screen})`);
         return;
       }
-      PG.actions.catchEncounter();
+      const now = Date.now();
+      if (now - sess.lastTeamClick < 1500) return;
+      sess.lastTeamClick = now;
+
+      const ok = PG.actions.selectTeamMember(cfg.teamSlot);
+      if (ok) sess.encounterTries += 1;
+      if (!ok || sess.encounterTries >= 3) {
+        sm.set('NEEDS_REVIEW',
+          ok ? 'wybór Pokémona nie startuje walki (3 próby)' : 'brak drużyny na ekranie spotkania');
+      }
     });
 
     sm.register('BATTLE', () => {
-      // TODO: automatyczna walka — na razie tylko zgłaszamy.
-      PG.logger.action('battle_round', false, { stub: true });
+      const screen = detectScreen();
+      if (screen !== 'battle') {
+        sm.set('SCANNING', `walka zakończona/zmieniona (${screen})`);
+        return;
+      }
+      if (!cfg.autoSkipBattle) return; // gra sama dokończy rundy
+
+      const now = Date.now();
+      if (now - sess.lastSkip < 2000) return;
+      sess.lastSkip = now;
+
+      if (PG.actions.skipBattle()) {
+        sess.battleTries += 1;
+        if (sess.battleTries >= 4) {
+          sm.set('NEEDS_REVIEW', '„Przejdź do końca walki” nie zmienia ekranu (4 próby)');
+        }
+      }
+    });
+
+    sm.register('CATCH', () => {
+      const screen = detectScreen();
+      if (screen !== 'ball_select') {
+        sm.set('SCANNING', `ekran wyboru piłki zmienił się (${screen})`);
+        return;
+      }
+
+      if (!cfg.autoCatch) {
+        // Nie łapemy — idziemy dalej wędrówką.
+        if (PG.actions.walkAgain()) sm.set('WANDER', 'autoCatch wyłączone — pomijam łapanie');
+        else sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie” przy pominiętym łapaniu');
+        return;
+      }
+
+      const now = Date.now();
+      if (now - sess.lastThrow < 1500) return;
+
+      if (sess.throws >= cfg.maxThrows) {
+        sm.set('NEEDS_REVIEW', `max rzutów w potyczce (${cfg.maxThrows}) osiągnięty`);
+        return;
+      }
+
+      sess.lastThrow = now;
+      sess.throws += 1;
+      const shiny = PG.actions.isShinyEncounter();
+      const ok = PG.actions.throwBall(shiny, sess.throws);
+      if (!ok) sm.set('NEEDS_REVIEW', 'brak piłki z konfiguracji (priorytety P1/P2 niedostępne)');
+    });
+
+    sm.register('HEAL', () => {
+      const ap = PG.actions.parseAP();
+      if (!ap) {
+        sm.set('NEEDS_REVIEW', 'nie mogę odczytać poziomu PUNKTÓW AKCJI ze strony');
+        return;
+      }
+      if (ap.current >= cfg.healBelow) {
+        sess.healTries = 0;
+        sm.set('SCANNING', `PA odnowione: ${ap.current}/${ap.total}`);
+        return;
+      }
+      if (sess.healTries >= 5) {
+        sm.set('NEEDS_REVIEW', `Regeneracja PA nie podnosi punktów (5 kliknięć, mam ${ap.current}/${ap.total})`);
+        return;
+      }
+      const now = Date.now();
+      if (now - sess.lastHeal < 2500) return;
+      sess.lastHeal = now;
+      if (cfg.autoHeal && PG.actions.heal()) {
+        sess.healTries += 1;
+      } else if (!cfg.autoHeal) {
+        sm.set('NEEDS_REVIEW', 'za mało PA, a autoHeal wyłączone');
+      } else {
+        sm.set('NEEDS_REVIEW', 'brak przycisku „Regeneracja punktów akcji”');
+      }
     });
 
     sm.register('QUEST_TURNIN', () => {
@@ -86,13 +245,8 @@ PG.main = (() => {
       PG.actions.claimRewards();
     });
 
-    sm.register('HEAL', () => {
-      if (PG.config.autoHeal) PG.actions.heal();
-      else sm.set('NEEDS_REVIEW', 'brak punktów akcji, autoHeal wyłączone');
-    });
-
     sm.register('INVENTORY', () => {
-      if (!PG.config.autoManage) {
+      if (!cfg.autoManage) {
         sm.set('NEEDS_REVIEW', 'zarządzanie ekwipunkiem, autoManage wyłączone');
         return;
       }
@@ -101,8 +255,7 @@ PG.main = (() => {
     });
 
     sm.register('SPECIAL_ENCOUNTER', () => {
-      // Shiny / tutor: jeżeli użytkownik chce pauzy — czekamy na niego.
-      if (PG.config.pauseOnSpecial) {
+      if (cfg.pauseOnSpecial) {
         sm.set('NEEDS_REVIEW', 'specjalne spotkanie (shiny/tutor) — decyzja człowieka');
       } else {
         sm.set('SCANNING', 'specjalne spotkanie pominięte (pauseOnSpecial=false)');
@@ -126,12 +279,15 @@ PG.main = (() => {
 
   function start() {
     PG.logger.push('bot_started', { version: PG.version });
+    try { localStorage.setItem(RESUME_KEY, '1'); } catch (_) { /* ignore */ }
+    lastScreen.value = null;
     PG.sm.start();
     startLoop();
   }
 
   function stop() {
     PG.logger.push('bot_stopped', {});
+    try { localStorage.removeItem(RESUME_KEY); } catch (_) { /* ignore */ }
     PG.sm.stop();
     stopLoop();
   }
@@ -145,8 +301,14 @@ PG.main = (() => {
     }
     window.__PG_BOT_BOOTED = true;
 
+    loadConfig(); // PRZED budową panelu — UI pokazuje zapisane preferencje
     registerStates();
     PG.panel.build();
+
+    // Zapisuj konfigurację przy każdej zmianie z panelu.
+    PG.logger.subscribe((entry) => {
+      if (entry.event === 'config_change') persistConfig();
+    });
 
     PG.logger.push('bot_booted', {
       version: PG.version,
@@ -158,6 +320,14 @@ PG.main = (() => {
       `%c[PG Edu Bot] v${PG.version} załadowany — otwórz panel po prawej, kliknij ▶ Start.`,
       'color:#facc15;font-weight:bold'
     );
+
+    // Auto-wznowienie po odświeżeniu/nawigacji (klawisz Start = „trzymaj włączone").
+    let resume = false;
+    try { resume = localStorage.getItem(RESUME_KEY) === '1'; } catch (_) { /* ignore */ }
+    if (resume && PG.config.autoResume) {
+      PG.logger.push('bot_auto_resumed', {});
+      setTimeout(start, 400);
+    }
   }
 
   if (document.readyState === 'loading') {
@@ -166,5 +336,5 @@ PG.main = (() => {
     boot();
   }
 
-  return { start, stop, detectScreen, registerStates };
+  return { start, stop, detectScreen, registerStates, persistConfig, loadConfig };
 })();

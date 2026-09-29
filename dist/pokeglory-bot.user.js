@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.1.1
+// @version      0.2.0
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,11 +25,12 @@
  */
 
 const PG = {
-  version: '0.1.1',
+  version: '0.2.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
-   * reszta to parametry techniczne.
+   * reszta to parametry techniczne. Całość zapisuje się w localStorage
+   * (persistencja po odświeżeniu strony).
    */
   config: {
     tickMs: 1500,          // jak często maszyna stanów wykonuje tick
@@ -38,12 +39,24 @@ const PG = {
 
     // przełączniki widoczne w panelu:
     autoWalk: true,        // wędrówki ("Wędruj ponownie")
-    autoCatch: false,      // łapanie — włączymy, gdy poznamy DOM ekranu spotkania
+    autoCatch: true,       // rzut piłką po wygranej walce
+    autoSkipBattle: true,  // klikaj "Przejdź do końca walki"
     autoQuests: true,      // skan i rozliczanie questów
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
-    autoManage: false,     // ewolucja + sprzedaż — wymaga DOM ekwipunku
+    autoManage: false,     // ewolucja + sprzedaż — wymaga potwierdzenia UI
+    autoResume: true,      // wznowienie działania po odświeżeniu strony
     pauseOnSpecial: true,  // shiny / tutor → zatrzymaj się i pokaż NEEDS_REVIEW
     debugConsole: true,    // lustrzane logi do konsoli przeglądarki
+
+    // łapanie / walka:
+    teamSlot: 1,           // który Pokémon z drużyny ma walczyć (1-based)
+    walkLocation: '',      // start z kokpitu: '' = ręcznie, np. 'Mroczne Miasto'
+    balls: {               // priorytet 1, priorytet 2 (zapasowy przy braku P1)
+      normal: ['Level Ball', 'Poké Ball'],
+      shiny: ['Shiny Ball', 'Master Ball'],
+    },
+    maxThrows: 3,          // maks. rzutów w jednej potyczce (potem NEEDS_REVIEW)
+    healBelow: 6,          // pij drinki, gdy PA < tej wartości (max koszt karty = 5)
   },
 };
 
@@ -258,6 +271,20 @@ PG.selectors = (() => {
     // (klik = prawdopodobnie start wędrówki; zachowanie do potwierdzenia).
     'walk-location-card': [
       { sel: 'button', re: /^\d+\s*PA[A-ZŁŚŻŹĆĄĘÓŃ]/ },
+    ],
+
+    // ── ekran spotkania / walki / wyniku (snapshoty 2026-09-29, /mapa) ────
+    'encounter-preview': [
+      '[data-pokeglory-integrity-role="encounter-preview"]',
+    ],
+    'team-selection': [
+      '[data-pokeglory-integrity-role="team-selection"]',
+    ],
+    'battle-skip-button': [
+      { sel: 'button', re: /Przejdź do końca walki/ },
+    ],
+    'ball-card': [
+      { sel: 'button', re: /Szansa złapania/i },
     ],
 
     // ── kandydaci do doprecyzowania po snapshotach innych ekranów ─────────
@@ -583,6 +610,7 @@ PG.quest = (() => {
  *   BATTLE           — walka
  *   QUEST_TURNIN     — odbiór ukończonego questa
  *   HEAL             — picie drinków (odnowa punktów akcji)
+ *   ENCOUNTER        — „Napotkano X!" → wybór Pokémona z drużyny
  *   INVENTORY        — ewolucja / sprzedaż
  *   SPECIAL_ENCOUNTER— shiny, tutor itp. → przepuszcza do NEEDS_REVIEW
  *   NEEDS_REVIEW     — bot nie rozpoznaje sytuacji → CZEKA na człowieka
@@ -664,7 +692,7 @@ PG.sm = (() => {
   }
 
   return {
-    STATES: ['STOPPED', 'SCANNING', 'WANDER', 'CATCH', 'BATTLE',
+    STATES: ['STOPPED', 'SCANNING', 'WANDER', 'ENCOUNTER', 'CATCH', 'BATTLE',
       'QUEST_TURNIN', 'HEAL', 'INVENTORY', 'SPECIAL_ENCOUNTER', 'NEEDS_REVIEW'],
     get state() { return state; },
     get paused() { return paused; },
@@ -681,12 +709,29 @@ PG.sm = (() => {
  *
  * Zasady:
  *  - wyłącznie odczyt + click(); nigdy nie modyfikujemy atrybutów gry,
- *  - brak elementu = selector_miss + przejście do NEEDS_REVIEW,
- *  - akcje nieznane (brak DOM) = action_stub w telemetrii — po to,
- *    żeby wiedzieć, których ekranów jeszcze nie IMPLEMENTOWALIŚMY.
+ *  - brak elementu = false + log (state machine decyduje o NEEDS_REVIEW),
+ *  - KAŻDY klik znakuje `lastActionAt` — maszyna stanów czeka z raportowaniem
+ *    nieznanego ekranu, aż gra zdąży zaktualizować widok (asynchroniczne
+ *    przejścia: wędrówka → spotkanie → walka → wynik).
+ *
+ * Znane ekrany (snapshoty z /mapa?areaId=2):
+ *   encounter: role encounter-preview + team-selection → „Napotkano X!"
+ *   battle:    „Przejdź do końca walki" (auto-rundy)
+ *   result:    karty Pokéballi („Szansa złapania: N%") po wygranej
+ *   walk:      walk-again-button (obecny NA KAŻDYM ekranie mapy!)
  */
 
 PG.actions = (() => {
+  let lastActionAt = 0;
+
+  function noteAction() {
+    lastActionAt = Date.now();
+  }
+
+  function sinceLastAction() {
+    return Date.now() - lastActionAt;
+  }
+
   /** Klik w element znaleziony po nazwie logicznej. */
   function click(name) {
     const el = PG.selectors.resolve(name);
@@ -695,38 +740,188 @@ PG.actions = (() => {
       PG.logger.push('action_disabled', { name });
       return false;
     }
+    noteAction();
     el.click();
     return true;
   }
 
-  /** „Wędruj ponownie” — jedyne known-known na dziś. */
+  // ── odczyt stanu ekranu ───────────────────────────────────────────────────
+
+  /** PA z paska: „PUNKTY AKCJI 123/155". null, gdy nie ma tekstu. */
+  function parseAP() {
+    const body = document.body ? document.body.innerText : '';
+    const m = /PUNKTY AKCJI\s*(\d+)\s*\/\s*(\d+)/i.exec(body);
+    return m ? { current: +m[1], total: +m[2] } : null;
+  }
+
+  /**
+   * Karty Pokéballi na ekranie wyniku:
+   * "Level BallIlość: 2937Szansa złapania: 59,8%" → { name, qty, chance, el }.
+   * Przy okazji uzupełnia katalog nazw dla panelu.
+   */
+  const ballCatalog = new Set([
+    'Master Ball', 'Poké Ball', 'Dive Ball', 'Timer Ball', 'Level Ball', 'Shiny Ball',
+  ]);
+
+  function parseBalls() {
+    const out = [];
+    for (const b of document.querySelectorAll('button')) {
+      const t = pgText(b.textContent, 160);
+      const m = /^(.+?)Ilość:\s*(\d+)Szansa złapania:\s*([\d,.]+)%/.exec(t);
+      if (m) {
+        const name = m[1].trim();
+        ballCatalog.add(name);
+        out.push({
+          name,
+          qty: +m[2],
+          chance: parseFloat(m[3].replace(',', '.')),
+          el: b,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Czy napotkany Pokémon jest shiny?
+   * Szukamy w podglądzie spotkania / podsumowaniu walki; „Shiny Ball"
+   * (nazwa piłki) wykluczamy, żeby nie było fałszywej detekcji.
+   */
+  function isShinyEncounter() {
+    const el = document.querySelector(
+      '[data-pokeglory-integrity-role="encounter-preview"],' +
+      '[data-pokeglory-integrity-role="battle-summary"]'
+    );
+    const raw = el ? pgText(el.textContent, 600) : '';
+    return /\bshiny\b/i.test(raw.replace(/Shiny Ball/gi, ''));
+  }
+
+  /** Przyciski drużyny na ekranie spotkania (tylko „Lv. …"). */
+  function teamButtons() {
+    const cont = document.querySelector('[data-pokeglory-integrity-role="team-selection"]');
+    if (!cont) return [];
+    return [...cont.querySelectorAll('button')]
+      .filter((b) => /^Lv\./.test(pgText(b.textContent, 25)));
+  }
+
+  /** Podgląd drużyny dla panelu (etykiety slotów). */
+  function peekTeam() {
+    return teamButtons().map((b, i) => ({
+      index: i + 1,
+      text: pgText(b.textContent, 60),
+    }));
+  }
+
+  /** Karty lokacji „4 PA Mroczne Miasto" (widoczne też poza kokpitem). */
+  function listLocations() {
+    const out = [];
+    for (const el of PG.selectors.resolveAll('walk-location-card')) {
+      const m = /^(\d+)\s*PA\s*(.+)$/.exec(pgText(el.textContent, 60));
+      if (m) out.push({ cost: +m[1], name: m[2].trim(), el });
+    }
+    return out;
+  }
+
+  // ── akcje ─────────────────────────────────────────────────────────────────
+
+  /** „Wędruj ponownie" — kontynuacja wędrówki w bieżącej lokacji. */
   function walkAgain() {
     const ok = click('walk-again-button');
-    if (!ok) {
-      PG.sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie”');
-      return false;
-    }
+    if (!ok) return false;
     PG.logger.action('walk_again', true);
     return true;
   }
 
-  /** Tymczasowy stub — dopóki nie poznamy DOM-u danego ekranu. */
-  function stub(name) {
-    PG.logger.action(name, false, { stub: true, hint: 'ekran jeszcze niezaimplementowany' });
+  /** Wybór Pokémona do walki (slot z konfiguracji panelu). */
+  function selectTeamMember(slot) {
+    const btns = teamButtons();
+    const b = btns[(slot || 1) - 1];
+    if (!b || b.disabled) {
+      PG.logger.action('team_member_selected', false, { slot: slot || 1, teamSize: btns.length });
+      return false;
+    }
+    noteAction();
+    b.click();
+    PG.logger.action('team_member_selected', true, {
+      slot: slot || 1,
+      teamSize: btns.length,
+      picked: pgText(b.textContent, 60),
+    });
+    return true;
+  }
+
+  /** Pominięcie animacji walki. */
+  function skipBattle() {
+    const ok = click('battle-skip-button');
+    if (ok) PG.logger.action('skip_battle', true);
+    return ok;
+  }
+
+  /**
+   * Rzut piłką zgodnie z priorytetami z konfiguracji.
+   * P1 → P2 (P2 tylko gdy P1 np. się skończył). Shiny = lista shiny.
+   */
+  function throwBall(shiny, attempt = 0) {
+    const balls = parseBalls();
+    const pref = [...(PG.config.balls[shiny ? 'shiny' : 'normal'] || [])].filter(Boolean);
+    for (const name of pref) {
+      const b = balls.find((x) => x.name === name && x.qty > 0);
+      if (!b) continue;
+      if (b.el.disabled) {
+        PG.logger.push('ball_disabled', { name });
+        continue;
+      }
+      noteAction();
+      b.el.click();
+      PG.logger.action('throw_ball', true, {
+        name, chance: b.chance, qty: b.qty, shiny: !!shiny, attempt,
+        pref,
+      });
+      return true;
+    }
+    PG.logger.push('no_ball_available', {
+      shiny: !!shiny,
+      pref,
+      available: balls.map((b) => ({ name: b.name, qty: b.qty, chance: b.chance })),
+    });
     return false;
   }
 
+  /** Picie drinka (odnowa PA) — przycisk „Regeneracja punktów akcji". */
+  function heal() {
+    const ok = click('heal-ap-button');
+    PG.logger.action('heal_ap', ok);
+    return ok;
+  }
+
+  /** Start wędrówki z kokpitu przez kartę lokacji. */
+  function walkLocation(name) {
+    const loc = listLocations().find(
+      (x) => x.name.localeCompare(name, 'pl', { sensitivity: 'base' }) === 0
+    );
+    if (!loc || loc.el.disabled) {
+      PG.logger.push('location_not_found', {
+        wanted: name,
+        have: listLocations().map((x) => x.name),
+      });
+      return false;
+    }
+    noteAction();
+    loc.el.click();
+    PG.logger.action('location_walk_started', true, { name: loc.name, cost: loc.cost });
+    return true;
+  }
+
   return {
-    walkAgain,
-    click,
-    // stuby do wypełnienia po pierwszych logach ze strony:
-    catchEncounter: () => stub('catch'),
-    fleeEncounter: () => stub('flee'),
-    heal: () => stub('heal'),
-    evolveTeam: () => stub('evolve'),
-    sellPokemon: () => stub('sell'),
-    turnInQuest: () => stub('turn_in'),
-    claimRewards: () => stub('claim_rewards'),
+    noteAction, sinceLastAction, click,
+    parseAP, parseBalls, isShinyEncounter, ballCatalog,
+    teamButtons, peekTeam, listLocations,
+    walkAgain, selectTeamMember, skipBattle, throwBall, heal, walkLocation,
+    // stuby do wypełnienia (ekwipunek, questy):
+    evolveTeam: () => { PG.logger.action('evolve', false, { stub: true }); return false; },
+    sellPokemon: () => { PG.logger.action('sell', false, { stub: true }); return false; },
+    turnInQuest: () => { PG.logger.action('turn_in', false, { stub: true }); return false; },
+    claimRewards: () => { PG.logger.action('claim_rewards', false, { stub: true }); return false; },
     /** Zgłoś specjalne spotkanie (shiny/tutor) → NEEDS_REVIEW, jeśli włączone. */
     specialEncounter(kind, extra = {}) {
       PG.logger.push('special_encounter', { kind, ...extra });
@@ -756,6 +951,7 @@ PG.panel = (() => {
     STOPPED: ['gray', 'STOPPED'],
     SCANNING: ['blue', 'SCANNING'],
     WANDER: ['green', 'WANDER'],
+    ENCOUNTER: ['orange', 'ENCOUNTER'],
     CATCH: ['orange', 'CATCH'],
     BATTLE: ['orange', 'BATTLE'],
     QUEST_TURNIN: ['teal', 'QUEST_TURNIN'],
@@ -767,10 +963,12 @@ PG.panel = (() => {
 
   const TOGGLES = [
     ['autoWalk', 'Wędrówki'],
-    ['autoCatch', 'Łapanie'],
+    ['autoCatch', 'Łapanie po walce'],
+    ['autoSkipBattle', 'Pomiń animację walki'],
     ['autoQuests', 'Questy'],
     ['autoHeal', 'Picie drinków'],
     ['autoManage', 'Ewolucja/sprzedaż'],
+    ['autoResume', 'Wznów po odświeżeniu'],
     ['pauseOnSpecial', 'Pauza: shiny/tutor'],
     ['debugConsole', 'Log do konsoli'],
   ];
@@ -871,6 +1069,14 @@ PG.panel = (() => {
     .log-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
     .muted { color: #5b6274; font-size: 11px; font-style: italic; }
     .empty { color: #5b6274; font-size: 11px; }
+    .field { font-size: 11px; color: #aab1c0; display: flex; flex-direction: column; gap: 3px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; }
+    select, input[type="number"] {
+      background: #232936; color: #e5e9f0; border: 1px solid #394152;
+      border-radius: 6px; padding: 4px 6px; font-size: 12px; width: 100%;
+      font-family: inherit;
+    }
+    select:focus, input:focus { outline: 1px solid #3b82f6; }
     ::-webkit-scrollbar { width: 8px; height: 8px; }
     ::-webkit-scrollbar-thumb { background: #2a2f3a; border-radius: 4px; }
   `;
@@ -904,6 +1110,37 @@ PG.panel = (() => {
           </div>
 
           <div class="toggles" id="toggles"></div>
+
+          <div>
+            <div class="sec-title">Automatyzacja</div>
+            <div class="grid2">
+              <label class="field">Pokémon do walki
+                <select id="selTeam"></select>
+              </label>
+              <label class="field">Lokacja startowa (kokpit)
+                <select id="selLoc"></select>
+              </label>
+            </div>
+            <div class="grid2" style="margin-top:6px">
+              <label class="field">Normalny — priorytet 1
+                <select id="selN1"></select>
+              </label>
+              <label class="field">Normalny — priorytet 2
+                <select id="selN2"></select>
+              </label>
+              <label class="field">Shiny — priorytet 1
+                <select id="selS1"></select>
+              </label>
+              <label class="field">Shiny — priorytet 2
+                <select id="selS2"></select>
+              </label>
+            </div>
+            <div class="grid2" style="margin-top:6px">
+              <label class="field">Max rzutów / potyczkę
+                <input type="number" id="inThrows" min="1" max="10" />
+              </label>
+            </div>
+          </div>
 
           <div>
             <div class="sec-title"><span>Questy</span><span id="questMeta"></span></div>
@@ -964,14 +1201,82 @@ PG.panel = (() => {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = !!PG.config[key];
-      cb.onchange = () => {
-        PG.config[key] = cb.checked;
-        PG.logger.push('config_change', { key, value: cb.checked });
-        render();
-      };
+      cb.onchange = () => cfgSet(key, cb.checked, label);
       lab.append(cb, document.createTextNode(label));
       tg.appendChild(lab);
     }
+
+    // Selecty / inputy sekcji „Automatyzacja”:
+    el('selTeam').onchange = (e) => cfgSet('teamSlot', +e.target.value, 'teamSlot');
+    el('selLoc').onchange = (e) => cfgSet('walkLocation', e.target.value, 'walkLocation');
+    el('selN1').onchange = (e) => ballSet('normal', 0, e.target.value);
+    el('selN2').onchange = (e) => ballSet('normal', 1, e.target.value);
+    el('selS1').onchange = (e) => ballSet('shiny', 0, e.target.value);
+    el('selS2').onchange = (e) => ballSet('shiny', 1, e.target.value);
+    el('inThrows').onchange = (e) => {
+      const v = Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 3));
+      cfgSet('maxThrows', v, 'maxThrows');
+    };
+  }
+
+  /** Zapis wartości do konfiguracji + log (persistencja w main). */
+  function cfgSet(key, value, label) {
+    PG.config[key] = value;
+    PG.logger.push('config_change', { key: label || key, value });
+    render();
+  }
+
+  function ballSet(kind, idx, value) {
+    PG.config.balls[kind][idx] = value;
+    PG.logger.push('config_change', { key: `balls.${kind}[${idx}]`, value });
+    render();
+  }
+
+  /** Wypełnij select opcjami (przebudowa tylko przy zmianie „sygnatury”). */
+  function fillSelect(id, opts, value) {
+    const s = el(id);
+    if (!s) return;
+    const sig = opts.map((o) => o.v).join('|');
+    if (s.dataset.sig !== sig) {
+      s.innerHTML = opts
+        .map((o) => `<option value="${escapeHtml(o.v)}">${escapeHtml(o.l)}</option>`)
+        .join('');
+      s.dataset.sig = sig;
+    }
+    s.value = value;
+    // Gdy zapisana wartość nie występuje w opcjach — dopisz ją (nie gubimy np. balli).
+    if (s.value !== value && value) {
+      s.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`);
+      s.value = value;
+    }
+  }
+
+  function syncAutomationUI() {
+    // Pokémon do walki: żywe etykiety z ekranu spotkania albo Slot 1..6.
+    const team = typeof PG.actions.peekTeam === 'function' ? PG.actions.peekTeam() : [];
+    const teamOpts = team.length
+      ? team.map((t) => ({ v: String(t.index), l: `Slot ${t.index} · ${t.text.slice(0, 30)}` }))
+      : Array.from({ length: 6 }, (_, i) => ({ v: String(i + 1), l: `Slot ${i + 1}` }));
+    fillSelect('selTeam', teamOpts, String(PG.config.teamSlot));
+
+    // Lokacje z kart „N PA Nazwa”.
+    const locs = typeof PG.actions.listLocations === 'function' ? PG.actions.listLocations() : [];
+    fillSelect('selLoc',
+      [{ v: '', l: '— ręcznie —' },
+        ...locs.map((x) => ({ v: x.name, l: `${x.name} (${x.cost} PA)` }))],
+      PG.config.walkLocation);
+
+    // Piłki: katalog wykrytych + zapisane preferencje (nic nie gubimy).
+    const balls = [...PG.actions.ballCatalog,
+      ...(PG.config.balls.normal || []),
+      ...(PG.config.balls.shiny || [])].filter(Boolean);
+    const ballOpts = [...new Set(balls)].map((n) => ({ v: n, l: n }));
+    fillSelect('selN1', ballOpts, (PG.config.balls.normal || [])[0] || '');
+    fillSelect('selN2', ballOpts, (PG.config.balls.normal || [])[1] || '');
+    fillSelect('selS1', ballOpts, (PG.config.balls.shiny || [])[0] || '');
+    fillSelect('selS2', ballOpts, (PG.config.balls.shiny || [])[1] || '');
+
+    el('inThrows').value = PG.config.maxThrows;
   }
 
   /** Snapshot ekranu: co bot „widzi” — do diagnostyki nowych ekranów. */
@@ -1040,6 +1345,8 @@ PG.panel = (() => {
     TOGGLES.forEach(([key], idx) => {
       if (inputs[idx]) inputs[idx].checked = !!PG.config[key];
     });
+
+    syncAutomationUI();
   }
 
   function renderQuests() {
@@ -1125,86 +1432,245 @@ PG.panel = (() => {
 
 /* ===== src/js/70-main.js ===== */
 /**
- * 70-main.js — start bota, pętla ticków i handlery stanów.
+ * 70-main.js — start bota, pętla ticków, handlery stanów, persistencja.
  *
- * SCANNING decyduje: skan questów → detekcja ekranu → przejście
- * do znanego stanu albo NEEDS_REVIEW (nieznany ekran).
+ * Detekcja ekranów (v3, oparta o snapshoty z /mapa):
+ *   encounter  → ENCOUNTER (wybór drużyny)
+ *   ball_select→ CATCH     (rzut po wygranej)
+ *   battle     → BATTLE    (skip animacji)
+ *   walk_ready → WANDER
+ *   kokpit     → SCANNING  (opcjonalny start z karty lokacji)
+ *   unknown    → NEEDS_REVIEW (po grace period po ostatnim kliknięciu)
  *
- * Detekcja ekranu jest na razie minimalna (v1) — każdy nowy typ
- * ekranu dopisujemy po analizie snapshotu/selector_miss z telemetrii.
+ * Kolejność detekcji ma znaczenie: walk-again-button obecny jest NA WSZYSTKICH
+ * ekranach mapy, więc encounter/piłki/walka muszą być sprawdzane przed nim.
  */
 
 PG.main = (() => {
   let timer = null;
 
-  // ── detekcja ekranu (v2 — kokpit rozpoznany po szybkich akcjach) ─────────
+  // Sesyjne liczniki (reset przy zmianie ekranu, patrz SCANNING).
+  const sess = {
+    encounterTries: 0,
+    battleTries: 0,
+    throws: 0,
+    healTries: 0,
+    lastTeamClick: 0,
+    lastThrow: 0,
+    lastSkip: 0,
+    lastHeal: 0,
+    lastWalk: 0,
+    lastLoc: 0,
+  };
+
+  const lastScreen = { value: null };
+
+  function resetSessionForScreen() {
+    sess.encounterTries = 0;
+    sess.battleTries = 0;
+    sess.throws = 0;
+    // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
+  }
+
+  // ── detekcja ekranu ───────────────────────────────────────────────────────
 
   function detectScreen() {
+    if (PG.selectors.resolve('encounter-preview', { reportMiss: false })) return 'encounter';
+    if (PG.selectors.resolve('team-selection', { reportMiss: false })) return 'encounter';
+    if (PG.actions.parseBalls().length > 0) return 'ball_select';
+    if (PG.selectors.resolve('battle-skip-button', { reportMiss: false })) return 'battle';
     if (PG.selectors.resolve('walk-again-button', { reportMiss: false })) return 'walk_ready';
-    // Kokpit — po URL/tytule (konserwatywnie: szybkie akcje typu „Regeneracja
-    // PA” mogą być globalnym paskiem i NIE mogą udawać kokpitu na innych
-    // ekranach, bo bot przestałby raportować nieznane stany).
     if (location.pathname.startsWith('/kokpit') || /kokpit/i.test(document.title)) return 'kokpit';
-    // TODO: ekran spotkania (catch), walka, strona questów…
     return 'unknown';
   }
 
-  // Ostatnio zalogowany ekran — żeby nie spamować screen_detected co ticka.
-  const lastScreen = { value: null };
+  // ── persistencja konfiguracji i auto-wznowienie ──────────────────────────
+
+  const CFG_KEY = 'pg-bot-config-v1';
+  const RESUME_KEY = 'pg-bot-autostart';
+
+  function loadConfig() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(CFG_KEY) || 'null');
+      if (saved && typeof saved === 'object') {
+        // shallow merge: nowe klucze z builda zostają, stare wartości wracają
+        if (saved.balls && typeof saved.balls === 'object') {
+          saved.balls = { ...PG.config.balls, ...saved.balls };
+        }
+        Object.assign(PG.config, saved);
+      }
+    } catch (_) { /* uszkodzony JSON → domyślne */ }
+  }
+
+  function persistConfig() {
+    try { localStorage.setItem(CFG_KEY, JSON.stringify(PG.config)); } catch (_) { /* quota */ }
+  }
 
   // ── handlery stanów ───────────────────────────────────────────────────────
 
   function registerStates() {
     const sm = PG.sm;
+    const cfg = PG.config;
 
     sm.register('SCANNING', () => {
-      if (PG.config.autoQuests) PG.quest.scan();
+      if (cfg.autoQuests) PG.quest.scan();
 
       const screen = detectScreen();
       if (screen !== lastScreen.value) {
         lastScreen.value = screen;
+        resetSessionForScreen();
         PG.logger.push('screen_detected', { screen, url: location.href });
       }
 
-      if (screen === 'walk_ready') {
-        sm.set('WANDER', 'rozpoznany ekran: wędrówka');
+      // 1) Ekrany akcji — routowane natychmiast, bez przerwy na heal.
+      if (screen === 'encounter') { sm.set('ENCOUNTER', 'spotkanie w dziczy'); return; }
+      if (screen === 'ball_select') { sm.set('CATCH', 'wybór piłki po walce'); return; }
+      if (screen === 'battle') { sm.set('BATTLE', 'walka w toku'); return; }
+
+      // 2) Niskie PA → picie drinków (globalny przycisk „Regeneracja…”).
+      const ap = PG.actions.parseAP();
+      if (cfg.autoHeal && ap && ap.current < cfg.healBelow) {
+        sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);
         return;
       }
+
+      // 3) Znane ekrany bez akcji.
+      if (screen === 'walk_ready') { sm.set('WANDER', 'rozpoznany ekran: wędrówka'); return; }
+
       if (screen === 'kokpit') {
-        // Ekran znany, ale nie mamy jeszcze pewnej automatycznej nawigacji
-        // (karty lokacji „4 PASafrania” czekają na potwierdzenie zachowania).
-        // Zostajemy w SCANNING i czekamy, aż użytkownik nawiguje na ekran
-        // wędrówki albo potwierdzi klik kart.
-        return;
+        if (cfg.walkLocation && cfg.autoWalk) {
+          const now = Date.now();
+          if (now - sess.lastLoc > 4000) {
+            sess.lastLoc = now;
+            PG.actions.walkLocation(cfg.walkLocation);
+          }
+        }
+        return; // zostajemy w SCANNING — czekamy na nawigację / akcję
       }
-      // Nieznany ekran: pełny snapshot do telemetrii + czekamy na człowieka.
-      if (PG.panel) PG.logger.push('screen_unknown_snapshot', {
+
+      // 4) Nieznany ekran — grace period po kliknięciu (gra się jeszcze ładuje).
+      if (PG.actions.sinceLastAction() < 4000) return;
+
+      PG.logger.push('screen_unknown_snapshot', {
         integrityRoles: PG.selectors.integrityRoles(),
         url: location.href,
       });
-      sm.set('NEEDS_REVIEW', `nieznany ekran (${screen}) — prześlij log do agenta`);
+      sm.set('NEEDS_REVIEW', `nieznany ekran — prześlij log do agenta`);
     });
 
     sm.register('WANDER', () => {
-      if (detectScreen() !== 'walk_ready') {
-        sm.set('SCANNING', 'ekran się zmienił po wędrówce');
+      const screen = detectScreen();
+      if (screen !== 'walk_ready') {
+        sm.set('SCANNING', `ekran zmienił się po wędrówce (${screen})`);
         return;
       }
-      if (PG.config.autoWalk) PG.actions.walkAgain();
-      // TODO: gdy autoCatch i wykryty ekran spotkania → CATCH
+      const ap = PG.actions.parseAP();
+      if (cfg.autoHeal && ap && ap.current < cfg.healBelow) {
+        sm.set('HEAL', `PA ${ap.current}/${ap.total} < ${cfg.healBelow}`);
+        return;
+      }
+      const now = Date.now();
+      if (now - sess.lastWalk < 2000) return; // nie klikaj szybciej niż co 2 s
+      if (cfg.autoWalk) {
+        sess.lastWalk = now;
+        if (!PG.actions.walkAgain()) {
+          sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie”');
+        }
+      }
     });
 
-    sm.register('CATCH', () => {
-      if (!PG.config.autoCatch) {
-        sm.set('NEEDS_REVIEW', 'spotkanie wymaga łapania, a autoCatch jest wyłączone');
+    sm.register('ENCOUNTER', () => {
+      const screen = detectScreen();
+      if (screen !== 'encounter') {
+        sm.set('SCANNING', `ekran spotkania zmienił się (${screen})`);
         return;
       }
-      PG.actions.catchEncounter();
+      const now = Date.now();
+      if (now - sess.lastTeamClick < 1500) return;
+      sess.lastTeamClick = now;
+
+      const ok = PG.actions.selectTeamMember(cfg.teamSlot);
+      if (ok) sess.encounterTries += 1;
+      if (!ok || sess.encounterTries >= 3) {
+        sm.set('NEEDS_REVIEW',
+          ok ? 'wybór Pokémona nie startuje walki (3 próby)' : 'brak drużyny na ekranie spotkania');
+      }
     });
 
     sm.register('BATTLE', () => {
-      // TODO: automatyczna walka — na razie tylko zgłaszamy.
-      PG.logger.action('battle_round', false, { stub: true });
+      const screen = detectScreen();
+      if (screen !== 'battle') {
+        sm.set('SCANNING', `walka zakończona/zmieniona (${screen})`);
+        return;
+      }
+      if (!cfg.autoSkipBattle) return; // gra sama dokończy rundy
+
+      const now = Date.now();
+      if (now - sess.lastSkip < 2000) return;
+      sess.lastSkip = now;
+
+      if (PG.actions.skipBattle()) {
+        sess.battleTries += 1;
+        if (sess.battleTries >= 4) {
+          sm.set('NEEDS_REVIEW', '„Przejdź do końca walki” nie zmienia ekranu (4 próby)');
+        }
+      }
+    });
+
+    sm.register('CATCH', () => {
+      const screen = detectScreen();
+      if (screen !== 'ball_select') {
+        sm.set('SCANNING', `ekran wyboru piłki zmienił się (${screen})`);
+        return;
+      }
+
+      if (!cfg.autoCatch) {
+        // Nie łapemy — idziemy dalej wędrówką.
+        if (PG.actions.walkAgain()) sm.set('WANDER', 'autoCatch wyłączone — pomijam łapanie');
+        else sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie” przy pominiętym łapaniu');
+        return;
+      }
+
+      const now = Date.now();
+      if (now - sess.lastThrow < 1500) return;
+
+      if (sess.throws >= cfg.maxThrows) {
+        sm.set('NEEDS_REVIEW', `max rzutów w potyczce (${cfg.maxThrows}) osiągnięty`);
+        return;
+      }
+
+      sess.lastThrow = now;
+      sess.throws += 1;
+      const shiny = PG.actions.isShinyEncounter();
+      const ok = PG.actions.throwBall(shiny, sess.throws);
+      if (!ok) sm.set('NEEDS_REVIEW', 'brak piłki z konfiguracji (priorytety P1/P2 niedostępne)');
+    });
+
+    sm.register('HEAL', () => {
+      const ap = PG.actions.parseAP();
+      if (!ap) {
+        sm.set('NEEDS_REVIEW', 'nie mogę odczytać poziomu PUNKTÓW AKCJI ze strony');
+        return;
+      }
+      if (ap.current >= cfg.healBelow) {
+        sess.healTries = 0;
+        sm.set('SCANNING', `PA odnowione: ${ap.current}/${ap.total}`);
+        return;
+      }
+      if (sess.healTries >= 5) {
+        sm.set('NEEDS_REVIEW', `Regeneracja PA nie podnosi punktów (5 kliknięć, mam ${ap.current}/${ap.total})`);
+        return;
+      }
+      const now = Date.now();
+      if (now - sess.lastHeal < 2500) return;
+      sess.lastHeal = now;
+      if (cfg.autoHeal && PG.actions.heal()) {
+        sess.healTries += 1;
+      } else if (!cfg.autoHeal) {
+        sm.set('NEEDS_REVIEW', 'za mało PA, a autoHeal wyłączone');
+      } else {
+        sm.set('NEEDS_REVIEW', 'brak przycisku „Regeneracja punktów akcji”');
+      }
     });
 
     sm.register('QUEST_TURNIN', () => {
@@ -1212,13 +1678,8 @@ PG.main = (() => {
       PG.actions.claimRewards();
     });
 
-    sm.register('HEAL', () => {
-      if (PG.config.autoHeal) PG.actions.heal();
-      else sm.set('NEEDS_REVIEW', 'brak punktów akcji, autoHeal wyłączone');
-    });
-
     sm.register('INVENTORY', () => {
-      if (!PG.config.autoManage) {
+      if (!cfg.autoManage) {
         sm.set('NEEDS_REVIEW', 'zarządzanie ekwipunkiem, autoManage wyłączone');
         return;
       }
@@ -1227,8 +1688,7 @@ PG.main = (() => {
     });
 
     sm.register('SPECIAL_ENCOUNTER', () => {
-      // Shiny / tutor: jeżeli użytkownik chce pauzy — czekamy na niego.
-      if (PG.config.pauseOnSpecial) {
+      if (cfg.pauseOnSpecial) {
         sm.set('NEEDS_REVIEW', 'specjalne spotkanie (shiny/tutor) — decyzja człowieka');
       } else {
         sm.set('SCANNING', 'specjalne spotkanie pominięte (pauseOnSpecial=false)');
@@ -1252,12 +1712,15 @@ PG.main = (() => {
 
   function start() {
     PG.logger.push('bot_started', { version: PG.version });
+    try { localStorage.setItem(RESUME_KEY, '1'); } catch (_) { /* ignore */ }
+    lastScreen.value = null;
     PG.sm.start();
     startLoop();
   }
 
   function stop() {
     PG.logger.push('bot_stopped', {});
+    try { localStorage.removeItem(RESUME_KEY); } catch (_) { /* ignore */ }
     PG.sm.stop();
     stopLoop();
   }
@@ -1271,8 +1734,14 @@ PG.main = (() => {
     }
     window.__PG_BOT_BOOTED = true;
 
+    loadConfig(); // PRZED budową panelu — UI pokazuje zapisane preferencje
     registerStates();
     PG.panel.build();
+
+    // Zapisuj konfigurację przy każdej zmianie z panelu.
+    PG.logger.subscribe((entry) => {
+      if (entry.event === 'config_change') persistConfig();
+    });
 
     PG.logger.push('bot_booted', {
       version: PG.version,
@@ -1284,6 +1753,14 @@ PG.main = (() => {
       `%c[PG Edu Bot] v${PG.version} załadowany — otwórz panel po prawej, kliknij ▶ Start.`,
       'color:#facc15;font-weight:bold'
     );
+
+    // Auto-wznowienie po odświeżeniu/nawigacji (klawisz Start = „trzymaj włączone").
+    let resume = false;
+    try { resume = localStorage.getItem(RESUME_KEY) === '1'; } catch (_) { /* ignore */ }
+    if (resume && PG.config.autoResume) {
+      PG.logger.push('bot_auto_resumed', {});
+      setTimeout(start, 400);
+    }
   }
 
   if (document.readyState === 'loading') {
@@ -1292,7 +1769,7 @@ PG.main = (() => {
     boot();
   }
 
-  return { start, stop, detectScreen, registerStates };
+  return { start, stop, detectScreen, registerStates, persistConfig, loadConfig };
 })();
 
 })();
