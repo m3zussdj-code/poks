@@ -295,7 +295,8 @@ PG.actions = (() => {
   /**
    * Jaki dialog zarządzania jest otwarty: 'evolve' | 'sell' | 'other' | null.
    * Rozróżniamy po tytule z snapshotu: „Ewoluować wszystkie?” /
-   * „Sprzedać Pokemony z rezerwy?”. Inny widoczny dialog → 'other'.
+   * „Sprzedać Pokemony z rezerwy?” / „Zregenerować punkty akcji?”.
+   * Inny widoczny dialog → 'other'.
    */
   function manageDialogKind() {
     let other = false;
@@ -304,9 +305,20 @@ PG.actions = (() => {
       const t = pgText(d.textContent, 400);
       if (/Ewoluować wszystkie/i.test(t)) return 'evolve';
       if (/Sprzedać Pokemony z rezerwy/i.test(t)) return 'sell';
+      if (/Zregenerować punkty akcji/i.test(t)) return 'ap';
       other = true;
     }
     return other ? 'other' : null;
+  }
+
+  /**
+   * Tekst przycisku potwierdzenia w dialogu — czysty (testowany).
+   * Dokładne napisy ze snapshotów gry; porównanie przez pgText, bez regexa.
+   */
+  function dialogConfirmText(kind) {
+    if (kind === 'evolve') return 'Ewoluuj wszystkie';
+    if (kind === 'ap') return 'Regeneruj';
+    return 'Sprzedaj';
   }
 
   /**
@@ -315,11 +327,11 @@ PG.actions = (() => {
    * „38Ewoluuj wszystkie gotowe…”; „Sprzedaj” ≠ „Szybka sprzedaż…”).
    */
   function confirmManageDialog(kind) {
-    const label = kind === 'evolve' ? /^Ewoluuj wszystkie$/ : /^Sprzedaj$/;
+    const want = dialogConfirmText(kind);
     for (const d of document.querySelectorAll('[role="dialog"][data-open]')) {
       if (!isVisible(d)) continue;
       const btn = [...d.querySelectorAll('button')]
-        .find((b) => label.test(pgText(b.textContent, 60)));
+        .find((b) => pgText(b.textContent, 60) === want);
       if (!btn) continue;
       if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') {
         PG.logger.push('action_disabled', { name: `dialog_${kind}` });
@@ -415,7 +427,7 @@ PG.actions = (() => {
     teamButtons, peekTeam, listLocations,
     parseTeamHpText, teamHpList, teamLowHp,
     parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
-    manageDialogKind, confirmManageDialog,
+    manageDialogKind, confirmManageDialog, dialogConfirmText,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
     evolveTeam, sellPokemon,
     walkLocation,

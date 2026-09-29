@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.7.0
+// @version      0.8.0
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.7.0',
+  version: '0.8.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -1185,7 +1185,8 @@ PG.actions = (() => {
   /**
    * Jaki dialog zarządzania jest otwarty: 'evolve' | 'sell' | 'other' | null.
    * Rozróżniamy po tytule z snapshotu: „Ewoluować wszystkie?” /
-   * „Sprzedać Pokemony z rezerwy?”. Inny widoczny dialog → 'other'.
+   * „Sprzedać Pokemony z rezerwy?” / „Zregenerować punkty akcji?”.
+   * Inny widoczny dialog → 'other'.
    */
   function manageDialogKind() {
     let other = false;
@@ -1194,9 +1195,20 @@ PG.actions = (() => {
       const t = pgText(d.textContent, 400);
       if (/Ewoluować wszystkie/i.test(t)) return 'evolve';
       if (/Sprzedać Pokemony z rezerwy/i.test(t)) return 'sell';
+      if (/Zregenerować punkty akcji/i.test(t)) return 'ap';
       other = true;
     }
     return other ? 'other' : null;
+  }
+
+  /**
+   * Tekst przycisku potwierdzenia w dialogu — czysty (testowany).
+   * Dokładne napisy ze snapshotów gry; porównanie przez pgText, bez regexa.
+   */
+  function dialogConfirmText(kind) {
+    if (kind === 'evolve') return 'Ewoluuj wszystkie';
+    if (kind === 'ap') return 'Regeneruj';
+    return 'Sprzedaj';
   }
 
   /**
@@ -1205,11 +1217,11 @@ PG.actions = (() => {
    * „38Ewoluuj wszystkie gotowe…”; „Sprzedaj” ≠ „Szybka sprzedaż…”).
    */
   function confirmManageDialog(kind) {
-    const label = kind === 'evolve' ? /^Ewoluuj wszystkie$/ : /^Sprzedaj$/;
+    const want = dialogConfirmText(kind);
     for (const d of document.querySelectorAll('[role="dialog"][data-open]')) {
       if (!isVisible(d)) continue;
       const btn = [...d.querySelectorAll('button')]
-        .find((b) => label.test(pgText(b.textContent, 60)));
+        .find((b) => pgText(b.textContent, 60) === want);
       if (!btn) continue;
       if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') {
         PG.logger.push('action_disabled', { name: `dialog_${kind}` });
@@ -1305,7 +1317,7 @@ PG.actions = (() => {
     teamButtons, peekTeam, listLocations,
     parseTeamHpText, teamHpList, teamLowHp,
     parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
-    manageDialogKind, confirmManageDialog,
+    manageDialogKind, confirmManageDialog, dialogConfirmText,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
     evolveTeam, sellPokemon,
     walkLocation,
@@ -2259,6 +2271,26 @@ PG.main = (() => {
     });
 
     sm.register('HEAL', () => {
+      // 1) Otwarty dialog „Zregenerować punkty akcji?” → klik „Regeneruj”
+      //    w jego obrębie; potem czekamy (cooldown + ticki), aż PA wzrośnie.
+      //    Inny dialog (gracz go otworzył) → czekamy, aż go zamknie.
+      const dlg = PG.actions.manageDialogKind();
+      if (dlg && dlg !== 'ap') return;
+      if (dlg === 'ap') {
+        const nowD = Date.now();
+        if (nowD - sess.lastHeal < jrand(cfg.cooldowns.heal)) return;
+        if (sess.healTries >= 5) {
+          sm.set('NEEDS_REVIEW', 'regeneracja PA: „Regeneruj” nie przechodzi (5 prób)');
+          return;
+        }
+        sess.lastHeal = nowD;
+        sess.healTries += 1;
+        if (!PG.actions.confirmManageDialog('ap')) {
+          sm.set('NEEDS_REVIEW', 'regeneracja PA: brak aktywnego „Regeneruj” w dialogu');
+        }
+        return;
+      }
+
       const ap = PG.actions.parseAP();
       if (!ap) {
         sm.set('NEEDS_REVIEW', 'nie mogę odczytać poziomu PUNKTÓW AKCJI ze strony');

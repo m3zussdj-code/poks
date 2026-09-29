@@ -215,6 +215,9 @@ eq(parseEvolveCount('Ewoluuj wszystkie gotowe Pokemony'), 0, ' brak liczby → 0
 eq(parseReserve('60/60Szybka sprzedaż pokemonów'), { current: 60, max: 60 }, ' rezerwa 60/60');
 eq(parseReserve('43/60Szybka sprzedaż pokemonów'), { current: 43, max: 60 }, ' rezerwa 43/60');
 eq(parseReserve('Szybka sprzedaż pokemonów'), null, ' bez licznika → null');
+eq(PG.actions.dialogConfirmText('ap'), 'Regeneruj', ' dialog PA → „Regeneruj”');
+eq(PG.actions.dialogConfirmText('evolve'), 'Ewoluuj wszystkie', ' dialog ewolucji');
+eq(PG.actions.dialogConfirmText('sell'), 'Sprzedaj', ' dialog sprzedaży');
 assert(
   parseReserve('60/60Szybka sprzedaż pokemonów').current
     >= parseReserve('60/60Szybka sprzedaż pokemonów').max,

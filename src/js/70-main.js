@@ -372,6 +372,26 @@ PG.main = (() => {
     });
 
     sm.register('HEAL', () => {
+      // 1) Otwarty dialog „Zregenerować punkty akcji?” → klik „Regeneruj”
+      //    w jego obrębie; potem czekamy (cooldown + ticki), aż PA wzrośnie.
+      //    Inny dialog (gracz go otworzył) → czekamy, aż go zamknie.
+      const dlg = PG.actions.manageDialogKind();
+      if (dlg && dlg !== 'ap') return;
+      if (dlg === 'ap') {
+        const nowD = Date.now();
+        if (nowD - sess.lastHeal < jrand(cfg.cooldowns.heal)) return;
+        if (sess.healTries >= 5) {
+          sm.set('NEEDS_REVIEW', 'regeneracja PA: „Regeneruj” nie przechodzi (5 prób)');
+          return;
+        }
+        sess.lastHeal = nowD;
+        sess.healTries += 1;
+        if (!PG.actions.confirmManageDialog('ap')) {
+          sm.set('NEEDS_REVIEW', 'regeneracja PA: brak aktywnego „Regeneruj” w dialogu');
+        }
+        return;
+      }
+
       const ap = PG.actions.parseAP();
       if (!ap) {
         sm.set('NEEDS_REVIEW', 'nie mogę odczytać poziomu PUNKTÓW AKCJI ze strony');
