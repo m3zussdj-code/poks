@@ -1,7 +1,7 @@
 # PG Edu Bot — skompaktowany stan ( czytaj TO zamiast full memory )
 
-Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **8e2e60f = v0.6.0**, testy **61/61**.
-Serwer dist: port **8377** (`python3 -m http.server`); przed podaniem URL → `curl -sf localhost:8377/pokeglory-bot.user.js | head -4`.
+Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **d5319b8 = v0.8.0**, testy **72/72**.
+Serwer dist: port **8377** (statyczny `python3 -m http.server` → `dist/`); przed podaniem URL → `curl -sf localhost:8377/pokeglory-bot.user.js | head -4`, restart = `start_process`.
 
 ## Konwencje (twarde)
 - Wszystko po polsku z użytkownikiem; push TYLKO na `arena/01a0ec56-poks`.
@@ -23,7 +23,20 @@ Serwer dist: port **8377** (`python3 -m http.server`); przed podaniem URL → `c
 - `70` main: `detectScreen` encounter→berry→ball→battle_result→battle→walk_ready→kokpit→unknown; SCANNING sekcja 1 ekrany akcji, 3 walk_ready|battle_result→WANDER; `sess` + `resetSessionForScreen`; **ENCOUNTER: autoHealTeam → `teamLowHp` → `healTeam` (cooldown, `teamHealTries>5`→NEEDS_REVIEW) → dopiero `selectTeamMember`**
 
 ## v0.6.0 — ZROBIONE (heal <50%)
-Toggle „Leczenie HP (< próg)" + input % (10–90). Hook w ENCOUNTER przed selekcją; reset `teamHealTries` gdy HP ok; build 84728 B.
+Toggle „Leczenie HP (< próg)" + input % (10–90). Hook w ENCOUNTER przed selekcją; reset `teamHealTries` gdy HP ok.
+
+## v0.7.0 — ZROBIONE (`ee1f0a5`, sprzedaż przy pełnej rezerwie)
+`parseEvolveCount`/`parseReserve`, `reserveFull`, `manageDialogKind()` (tytuły dialogów), `confirmManageDialog`
+(pgText × N regex w dialogu; `data-slot="dialog-close"` NIE). INVENTORY: dialog → evolve → reserveFull → sell
+→ SCANNING; `manage*Tries>6` → NEEDS_REVIEW. Trigger: SCANNING 2b i WANDER (`autoManage && reserveFull()`).
+Migracja loadConfig: `preManageSave` → `autoManage=true`.
+
+## v0.8.0 — ZROBIONE (`d5319b8`, dialog regeneracji PA)
+HEAL klika `heal-ap-button` → dialog „Zregenerować punkty akcji?" → HEAL jako PIERWSZE sprawdza
+`manageDialogKind()==='ap'`: cooldown `lastHeal`, `healTries++` (≥5 → NEEDS_REVIEW), `confirmManageDialog('ap')`
+→ PA 155/155 → `ap ≥ healBelow` → SCANNING. Inny dialog w HEAL → ciche czekanie. `dialogConfirmText(kind)`
+czysty (ap→`Regeneruj`, evolve→`Ewoluuj wszystkie`, sell→`Sprzedaj`), testy 72/72. Dialog NIE w detectScreen
+(wpada w battle_result) — obsługa w HEAL, nie w INVENTORY.
 
 ## Otwarte (nie zapomnieć)
 1. v0.5.0: co się pojawia PO „Zbierz jagody" (jeśli NEEDS_REVIEW → snapshot).
