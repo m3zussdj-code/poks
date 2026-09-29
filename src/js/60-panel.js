@@ -240,19 +240,23 @@ PG.panel = (() => {
   function buildSnapshot() {
     const buttons = [...document.querySelectorAll('button, a[href], [role="button"]')]
       .slice(0, 200)
-      .map((b) => ({
-        tag: b.tagName.toLowerCase(),
-        text: pgText(b.textContent, 60),
-        id: b.id || null,
-        role: b.getAttribute('data-pokeglory-integrity-role'),
-        cls: pgText(b.className, 100),
-      }));
+      .map((b) => {
+        const o = {
+          tag: b.tagName.toLowerCase(),
+          text: pgText(b.textContent, 60),
+          id: b.id || null,
+          role: b.getAttribute('data-pokeglory-integrity-role'),
+          cls: pgText(b.className, 100),
+        };
+        if (b.tagName === 'A') o.href = b.getAttribute('href');
+        return o;
+      });
     return {
       url: location.href,
       title: document.title,
       integrityRoles: PG.selectors.integrityRoles(),
       buttons,
-      bodyText: pgText(document.body ? document.body.innerText : '', 4000),
+      bodyText: pgText(document.body ? document.body.innerText : '', 8000),
     };
   }
 

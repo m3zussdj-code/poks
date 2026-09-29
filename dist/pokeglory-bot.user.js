@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.1.0
+// @version      0.1.1
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.1.0',
+  version: '0.1.1',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -216,29 +216,56 @@ PG.logger = (() => {
  * 20-selectors.js — rejestr selektorów.
  *
  * Każda logiczna nazwa mapuje się na listę kandydatów; pierwszy
- * trafiony wygrywa. Priorytet: atrybuty data-pokeglory-integrity-role
- * (stabilne haki wbudowane w grę) → klasyczne selektory CSS → tekst.
+ * trafiony wygrywa. Kandydat to albo:
+ *   - string  → zwykły CSS (np. '[data-pokeglory-integrity-role="…"]'),
+ *   - { sel, re } → elementy pasujące do CSS `sel`, których tekst
+ *     (skrócony do 200 znaków) pasuje do regex `re`.
+ *
+ * Priorytet: atrybuty data-pokeglory-integrity-role (stabilne haki gry,
+ * obecne tylko na niektórych ekranach) → selektory tekstowe → CSS.
  *
  * ZASADA: bot TYLKO CZYTA atrybuty gry — nigdy ich nie modyfikuje.
  */
 
 PG.selectors = (() => {
-  /** @type {Record<string, string[]>} */
+  /** @type {Record<string, Array<string|{sel: string, re: RegExp}>>} */
   const registry = {
-    // Znane na 100% (przekazane przez użytkownika):
+    // ── znane z danych od użytkownika ──────────────────────────────────────
+    // Rola obecna na ekranie wędrówki (NIE na kokpicie — weryfikowane).
     'walk-again-button': [
       '[data-pokeglory-integrity-role="walk-again-button"]',
     ],
 
-    // Kandydaci do doprecyzowania po pierwszych logach ze strony:
+    // ── szybkie akcje kokpitu (ze snapshotu 2026-09-29) ───────────────────
+    // Teksty z gry: "360Regeneracja punktów akcji", "6Ewoluuj wszystkie…" itd.
+    'heal-ap-button': [
+      { sel: 'button', re: /Regeneracja punktów akcji/i },
+    ],
+    'evolve-all-button': [
+      { sel: 'button', re: /Ewoluuj wszystkie gotowe/i },
+    ],
+    'quick-sell-button': [
+      { sel: 'button', re: /Szybka sprzedaż pokemonów/i },
+    ],
+    'heal-team-button': [
+      { sel: 'button', re: /Leczenie wszystkich pokemonów/i },
+    ],
+    'convert-pz-button': [
+      { sel: 'button', re: /Wymiana PZ na PA/i },
+    ],
+
+    // Karty „Wędrówki w dziczy": "4 PASafrania", "5 PAPrizmania"…
+    // (klik = prawdopodobnie start wędrówki; zachowanie do potwierdzenia).
+    'walk-location-card': [
+      { sel: 'button', re: /^\d+\s*PA[A-ZŁŚŻŹĆĄĘÓŃ]/ },
+    ],
+
+    // ── kandydaci do doprecyzowania po snapshotach innych ekranów ─────────
     'quest-container': [
       '[data-pokeglory-integrity-role*="quest"]',
       '[data-pokeglory-integrity-role*="objective"]',
       '[data-pokeglory-integrity-role*="task"]',
-    ],
-    'heal-button': [
-      '[data-pokeglory-integrity-role*="heal"]',
-      '[data-pokeglory-integrity-role*="drink"]',
+      { sel: 'section', re: /Nagrody za ukończenie/i },
     ],
     'encounter-catch-button': [
       '[data-pokeglory-integrity-role*="catch"]',
@@ -247,13 +274,36 @@ PG.selectors = (() => {
     'quest-claim-button': [
       '[data-pokeglory-integrity-role*="claim"]',
       '[data-pokeglory-integrity-role*="reward"]',
-      '[data-pokeglory-integrity-role*="complete"]',
+      { sel: 'button', re: /^Odbierz/i },
     ],
   };
 
   /** Zarejestruj (lub podmień) kandydatów dla nazwy logicznej. */
   function register(name, candidates) {
     registry[name] = [...candidates];
+  }
+
+  /** Znajdź pierwszy element dla jednego kandydata (string albo {sel,re}). */
+  function findFirst(desc) {
+    if (typeof desc === 'string') return document.querySelector(desc);
+    try {
+      for (const el of document.querySelectorAll(desc.sel)) {
+        if (desc.re.test(pgText(el.textContent, 200))) return el;
+      }
+    } catch (_) { /* nieprawidłowy selektor — ignoruj */ }
+    return null;
+  }
+
+  /** Znajdź wszystkie elementy dla jednego kandydata. */
+  function findAll(desc) {
+    if (typeof desc === 'string') return [...document.querySelectorAll(desc)];
+    const out = [];
+    try {
+      for (const el of document.querySelectorAll(desc.sel)) {
+        if (desc.re.test(pgText(el.textContent, 200))) out.push(el);
+      }
+    } catch (_) { /* ignoruj */ }
+    return out;
   }
 
   /**
@@ -266,29 +316,26 @@ PG.selectors = (() => {
       PG.logger.push('selector_unknown', { name });
       return null;
     }
-    for (const sel of candidates) {
+    for (const desc of candidates) {
       try {
-        const el = document.querySelector(sel);
+        const el = findFirst(desc);
         if (el) return el;
       } catch (_) {
-        PG.logger.push('selector_invalid', { name, sel });
+        PG.logger.push('selector_invalid', { name, sel: String(desc) });
       }
     }
     if (reportMiss) PG.logger.selectorMiss(name);
     return null;
   }
 
-  /** resolve() zwracający wszystkie trafienia. */
+  /** resolve() zwracający wszystkie trafienia (np. karty lokacji). */
   function resolveAll(name) {
     const candidates = registry[name] || [];
-    const out = [];
-    for (const sel of candidates) {
-      try {
-        out.push(...document.querySelectorAll(sel));
-        if (out.length) break;
-      } catch (_) { /* ignoruj nieprawidłowy selektor */ }
+    for (const desc of candidates) {
+      const found = findAll(desc);
+      if (found.length) return found;
     }
-    return out;
+    return [];
   }
 
   /** Inwentarz haków gry: wszystkie obecne data-pokeglory-integrity-role. */
@@ -931,19 +978,23 @@ PG.panel = (() => {
   function buildSnapshot() {
     const buttons = [...document.querySelectorAll('button, a[href], [role="button"]')]
       .slice(0, 200)
-      .map((b) => ({
-        tag: b.tagName.toLowerCase(),
-        text: pgText(b.textContent, 60),
-        id: b.id || null,
-        role: b.getAttribute('data-pokeglory-integrity-role'),
-        cls: pgText(b.className, 100),
-      }));
+      .map((b) => {
+        const o = {
+          tag: b.tagName.toLowerCase(),
+          text: pgText(b.textContent, 60),
+          id: b.id || null,
+          role: b.getAttribute('data-pokeglory-integrity-role'),
+          cls: pgText(b.className, 100),
+        };
+        if (b.tagName === 'A') o.href = b.getAttribute('href');
+        return o;
+      });
     return {
       url: location.href,
       title: document.title,
       integrityRoles: PG.selectors.integrityRoles(),
       buttons,
-      bodyText: pgText(document.body ? document.body.innerText : '', 4000),
+      bodyText: pgText(document.body ? document.body.innerText : '', 8000),
     };
   }
 
@@ -1086,13 +1137,20 @@ PG.panel = (() => {
 PG.main = (() => {
   let timer = null;
 
-  // ── detekcja ekranu (v1 — rozszerzamy po logach) ─────────────────────────
+  // ── detekcja ekranu (v2 — kokpit rozpoznany po szybkich akcjach) ─────────
 
   function detectScreen() {
     if (PG.selectors.resolve('walk-again-button', { reportMiss: false })) return 'walk_ready';
-    // TODO: ekran spotkania (catch), walka, centrum heal, ekwipunek…
+    // Kokpit — po URL/tytule (konserwatywnie: szybkie akcje typu „Regeneracja
+    // PA” mogą być globalnym paskiem i NIE mogą udawać kokpitu na innych
+    // ekranach, bo bot przestałby raportować nieznane stany).
+    if (location.pathname.startsWith('/kokpit') || /kokpit/i.test(document.title)) return 'kokpit';
+    // TODO: ekran spotkania (catch), walka, strona questów…
     return 'unknown';
   }
+
+  // Ostatnio zalogowany ekran — żeby nie spamować screen_detected co ticka.
+  const lastScreen = { value: null };
 
   // ── handlery stanów ───────────────────────────────────────────────────────
 
@@ -1103,10 +1161,20 @@ PG.main = (() => {
       if (PG.config.autoQuests) PG.quest.scan();
 
       const screen = detectScreen();
-      PG.logger.push('screen_detected', { screen });
+      if (screen !== lastScreen.value) {
+        lastScreen.value = screen;
+        PG.logger.push('screen_detected', { screen, url: location.href });
+      }
 
       if (screen === 'walk_ready') {
         sm.set('WANDER', 'rozpoznany ekran: wędrówka');
+        return;
+      }
+      if (screen === 'kokpit') {
+        // Ekran znany, ale nie mamy jeszcze pewnej automatycznej nawigacji
+        // (karty lokacji „4 PASafrania” czekają na potwierdzenie zachowania).
+        // Zostajemy w SCANNING i czekamy, aż użytkownik nawiguje na ekran
+        // wędrówki albo potwierdzi klik kart.
         return;
       }
       // Nieznany ekran: pełny snapshot do telemetrii + czekamy na człowieka.

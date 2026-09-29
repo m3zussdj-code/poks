@@ -11,13 +11,20 @@
 PG.main = (() => {
   let timer = null;
 
-  // ── detekcja ekranu (v1 — rozszerzamy po logach) ─────────────────────────
+  // ── detekcja ekranu (v2 — kokpit rozpoznany po szybkich akcjach) ─────────
 
   function detectScreen() {
     if (PG.selectors.resolve('walk-again-button', { reportMiss: false })) return 'walk_ready';
-    // TODO: ekran spotkania (catch), walka, centrum heal, ekwipunek…
+    // Kokpit — po URL/tytule (konserwatywnie: szybkie akcje typu „Regeneracja
+    // PA” mogą być globalnym paskiem i NIE mogą udawać kokpitu na innych
+    // ekranach, bo bot przestałby raportować nieznane stany).
+    if (location.pathname.startsWith('/kokpit') || /kokpit/i.test(document.title)) return 'kokpit';
+    // TODO: ekran spotkania (catch), walka, strona questów…
     return 'unknown';
   }
+
+  // Ostatnio zalogowany ekran — żeby nie spamować screen_detected co ticka.
+  const lastScreen = { value: null };
 
   // ── handlery stanów ───────────────────────────────────────────────────────
 
@@ -28,10 +35,20 @@ PG.main = (() => {
       if (PG.config.autoQuests) PG.quest.scan();
 
       const screen = detectScreen();
-      PG.logger.push('screen_detected', { screen });
+      if (screen !== lastScreen.value) {
+        lastScreen.value = screen;
+        PG.logger.push('screen_detected', { screen, url: location.href });
+      }
 
       if (screen === 'walk_ready') {
         sm.set('WANDER', 'rozpoznany ekran: wędrówka');
+        return;
+      }
+      if (screen === 'kokpit') {
+        // Ekran znany, ale nie mamy jeszcze pewnej automatycznej nawigacji
+        // (karty lokacji „4 PASafrania” czekają na potwierdzenie zachowania).
+        // Zostajemy w SCANNING i czekamy, aż użytkownik nawiguje na ekran
+        // wędrówki albo potwierdzi klik kart.
         return;
       }
       // Nieznany ekran: pełny snapshot do telemetrii + czekamy na człowieka.
