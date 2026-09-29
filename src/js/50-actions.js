@@ -79,30 +79,13 @@ PG.actions = (() => {
   }
 
   let bridgeSeq = 0;
-  let lastWaitLog = 0;
+  let lastBridgeFallback = 0;
   let lastUndeliveredLog = 0;
-  let lastFire = 'local';
-  let lastWaitReason = null;
-  let lastWaitTs = 0;
-
-  /** Ostatni typ fire(): 'cdp' | 'wait' | 'local'. Odczyt stanu. */
-  function lastFireKind() { return lastFire; }
-
-  /**
-   * Powód wstrzymania kliknięcia ('no_driver' / 'not_clickable' / 'rect'),
-   * jeśli OSTATNI fire() był 'wait' ( świeżo, <1,5 s) — inaczej null.
-   * Odczyt stanu — bezsidefektowy.
-   */
-  function lastWait() {
-    return (lastWaitReason && Date.now() - lastWaitTs < 1500) ? lastWaitReason : null;
-  }
 
   /**
    * Jedno miejsce klikania gry: CDP (trusted) → window.__pgClick;
-   * cdpBridge=ON, ale driver nie odpowiada / element nie do kliknięcia →
-   * 'wait' (NIC nie klikamy — lokalny el.click() = isTrusted=false =
-   * +80 pkt dla antycheatu gry); cdpBridge=OFF → zwykły el.click().
-   * Zwraca 'cdp' | 'wait' | 'local'.
+   * bez drivera / bez konfiguracji → zwykły el.click() (fallback).
+   * Zwraca 'cdp' | 'local'.
    */
   function fire(el) {
     let fbReason = null;
@@ -136,32 +119,19 @@ PG.actions = (() => {
           }
           bridgeSeq += 1;
           window.__pgClick = { id: bridgeSeq, x: p.x, y: p.y, ts: Date.now() };
-          lastFire = 'cdp';
-          lastWaitReason = null;
-          return lastFire;
+          return 'cdp';
         }
         fbReason = 'not_clickable'; // po scrollu nadal poza viewportem / zasłonięty
       } catch (_) { fbReason = 'rect'; }
     }
     if (!bridgeFresh()) window.__pgClick = null; // nie zostawiamy ducha żądania
-    if (PG.config.cdpBridge) {
-      // v0.10.4: NIGDY el.click() przy włączonym CDP. Klik lokalny gra
-      // flaguje jako „Mocny sygnał automatyzacji” (isTrusted=false, +80 pkt
-      // przy progu 70) — wstrzymujemy klik i zostawiamy ślad w telemetrii.
-      const reason = fbReason || (bridgeFresh() ? 'rect' : 'no_driver');
-      lastFire = 'wait';
-      lastWaitReason = reason;
-      lastWaitTs = Date.now();
-      if (Date.now() - lastWaitLog > 15000) {
-        lastWaitLog = Date.now();
-        PG.logger.push('bridge_wait', { reason });
-      }
-      return lastFire;
+    if (PG.config.cdpBridge && Date.now() - lastBridgeFallback > 60000) {
+      lastBridgeFallback = Date.now();
+      PG.logger.push('bridge_fallback',
+        { reason: fbReason || (bridgeFresh() ? 'rect' : 'no_driver') });
     }
     el.click();
-    lastFire = 'local';
-    lastWaitReason = null;
-    return lastFire;
+    return 'local';
   }
 
   /** Klik w element znaleziony po nazwie logicznej. */
@@ -173,7 +143,7 @@ PG.actions = (() => {
       return false;
     }
     noteAction();
-    if (fire(el) === 'wait') return false; // wstrzymane — licznik w handlerze
+    fire(el);
     return true;
   }
 
@@ -319,10 +289,7 @@ PG.actions = (() => {
       return false;
     }
     noteAction();
-    if (fire(b) === 'wait') {
-      PG.logger.action('team_member_selected', false, { slot: slot || 1, wait: lastWait() });
-      return false;
-    }
+    fire(b);
     PG.logger.action('team_member_selected', true, {
       slot: slot || 1,
       teamSize: btns.length,
@@ -353,10 +320,7 @@ PG.actions = (() => {
         continue;
       }
       noteAction();
-      if (fire(b.el) === 'wait') {
-        PG.logger.action('throw_ball', false, { name, wait: lastWait() });
-        return null; // nie kliknęliśmy — handler odróżni od „brak piłki”
-      }
+      fire(b.el);
       const thrown = { name, qty: b.qty };
       PG.logger.action('throw_ball', true, {
         name, chance: b.chance, qty: b.qty, shiny: !!shiny, attempt,
@@ -397,10 +361,7 @@ PG.actions = (() => {
       return false;
     }
     noteAction();
-    if (fire(el) === 'wait') {
-      PG.logger.action('team_heal', false, { wait: lastWait() });
-      return false;
-    }
+    fire(el);
     PG.logger.action('team_heal', true, {
       via: pgText(el.textContent, 40),
       wasVisible: isVisible(el),
@@ -485,10 +446,7 @@ PG.actions = (() => {
         return false;
       }
       noteAction();
-      if (fire(btn) === 'wait') {
-        PG.logger.action('dialog_confirm', false, { kind, wait: lastWait() });
-        return false;
-      }
+      fire(btn);
       PG.logger.action('dialog_confirm', true, { kind });
       return true;
     }
@@ -552,10 +510,7 @@ PG.actions = (() => {
     }
     lastFail = '';
     noteAction();
-    if (fire(loc.el) === 'wait') {
-      PG.logger.action('location_walk_started', false, { name: loc.name, wait: lastWait() });
-      return false;
-    }
+    fire(loc.el);
     PG.logger.action('location_walk_started', true, { name: loc.name, cost: loc.cost });
     return true;
   }
@@ -597,7 +552,7 @@ PG.actions = (() => {
     parseTeamHpText, teamHpList, teamLowHp,
     parseEvolveCount, parseReserve, evolveReadyCount, reserveInfo, reserveFull,
     manageDialogKind, confirmManageDialog, dialogConfirmText, parseDigCost,
-    bridgeFresh, bridgePoint, pickPoint, lastWait, lastFireKind,
+    bridgeFresh, bridgePoint, pickPoint,
     walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
     evolveTeam, sellPokemon,
     walkLocation,
