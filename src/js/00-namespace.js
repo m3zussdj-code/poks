@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.3.0',
+  version: '0.4.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -15,9 +15,22 @@ const PG = {
    * (persistencja po odświeżeniu strony).
    */
   config: {
-    tickMs: 1500,          // jak często maszyna stanów wykonuje tick
+    tickMs: 500,           // interwał pętli (im mniejszy, tym szybciej reaguje)
+    graceMs: 2500,         // po kliknięciu czekamy tyle na aktualizację ekranu
     logLimit: 500,         // rozmiar ring buffera telemetrii
     missThrottleMs: 15000, // nie spamuj logów powtarzającymi się selector_miss
+
+    // minimalne odstępy między klikami (ms) — chronią przed spamowaniem
+    // serwera gry; gracz klika szybciej niż raz na sekundę, więc 600-800
+    // to wciąż bezpiecznie poniżej ludzkiego burstu.
+    cooldowns: {
+      walk: 800,
+      team: 600,
+      throw: 800,
+      skip: 700,
+      heal: 1200,
+      location: 1500,
+    },
 
     // przełączniki widoczne w panelu:
     autoWalk: true,        // wędrówki ("Wędruj ponownie")

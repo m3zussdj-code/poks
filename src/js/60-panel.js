@@ -208,6 +208,9 @@ PG.panel = (() => {
               <label class="field">Max rzutów / potyczkę
                 <input type="number" id="inThrows" min="1" max="10" />
               </label>
+              <label class="field">Tick pętli (ms)
+                <input type="number" id="inTick" min="150" max="5000" step="50" />
+              </label>
             </div>
           </div>
 
@@ -291,6 +294,12 @@ PG.panel = (() => {
       const v = Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 3));
       cfgSet('maxThrows', v, 'maxThrows');
     };
+    el('inTick').onchange = (e) => {
+      const v = Math.max(150, Math.min(5000, parseInt(e.target.value, 10) || 500));
+      cfgSet('tickMs', v, 'tickMs');
+      // nowy interwał działa od razu, bez restartu bota:
+      if (PG.main && typeof PG.main.restartLoop === 'function') PG.main.restartLoop();
+    };
   }
 
   /** Zapis wartości do konfiguracji + log (persistencja w main). */
@@ -351,6 +360,7 @@ PG.panel = (() => {
     fillSelect('selS2', ballOpts, (PG.config.balls.shiny || [])[1] || '');
 
     el('inThrows').value = PG.config.maxThrows;
+    el('inTick').value = PG.config.tickMs;
   }
 
   /** Snapshot ekranu: co bot „widzi” — do diagnostyki nowych ekranów. */

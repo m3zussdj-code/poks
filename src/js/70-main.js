@@ -87,7 +87,15 @@ PG.main = (() => {
         if (saved.balls && typeof saved.balls === 'object') {
           saved.balls = { ...PG.config.balls, ...saved.balls };
         }
+        const isOldSave = !saved.cooldowns; // brak cooldownów = zapis z < v0.4.0
+        if (saved.cooldowns) {
+          saved.cooldowns = { ...PG.config.cooldowns, ...saved.cooldowns };
+        }
         Object.assign(PG.config, saved);
+        if (isOldSave) {
+          // Stary zapis miał tickMs1500 — wymuszamy nowy, szybszy tick.
+          PG.config.tickMs = 500;
+        }
       }
     } catch (_) { /* uszkodzony JSON → domyślne */ }
   }
@@ -135,7 +143,7 @@ PG.main = (() => {
         const target = questWalkTarget() || cfg.walkLocation || '';
         if (target && cfg.autoWalk) {
           const now = Date.now();
-          if (now - sess.lastLoc > 4000) {
+          if (now - sess.lastLoc > cfg.cooldowns.location) {
             sess.lastLoc = now;
             if (PG.actions.walkLocation(target)) setCurrentLoc(target);
           }
@@ -144,7 +152,7 @@ PG.main = (() => {
       }
 
       // 4) Nieznany ekran — grace period po kliknięciu (gra się jeszcze ładuje).
-      if (PG.actions.sinceLastAction() < 4000) return;
+      if (PG.actions.sinceLastAction() < cfg.graceMs) return;
 
       PG.logger.push('screen_unknown_snapshot', {
         integrityRoles: PG.selectors.integrityRoles(),
@@ -169,7 +177,7 @@ PG.main = (() => {
       const target = questWalkTarget();
       if (target && currentLoc() !== target) {
         const now = Date.now();
-        if (now - sess.lastLoc > 4000) {
+        if (now - sess.lastLoc > cfg.cooldowns.location) {
           sess.lastLoc = now;
           if (PG.actions.walkLocation(target)) {
             PG.logger.push('quest_location_sync', { target, previous: currentLoc() });
@@ -181,7 +189,7 @@ PG.main = (() => {
       }
 
       const now2 = Date.now();
-      if (now2 - sess.lastWalk < 2000) return; // nie klikaj szybciej niż co 2 s
+      if (now2 - sess.lastWalk < cfg.cooldowns.walk) return; // min. odstęp między klikami
       if (cfg.autoWalk) {
         sess.lastWalk = now2;
         if (!PG.actions.walkAgain()) {
@@ -197,7 +205,7 @@ PG.main = (() => {
         return;
       }
       const now = Date.now();
-      if (now - sess.lastTeamClick < 1500) return;
+      if (now - sess.lastTeamClick < cfg.cooldowns.team) return;
       sess.lastTeamClick = now;
 
       const ok = PG.actions.selectTeamMember(cfg.teamSlot);
@@ -217,7 +225,7 @@ PG.main = (() => {
       if (!cfg.autoSkipBattle) return; // gra sama dokończy rundy
 
       const now = Date.now();
-      if (now - sess.lastSkip < 2000) return;
+      if (now - sess.lastSkip < cfg.cooldowns.skip) return;
       sess.lastSkip = now;
 
       if (PG.actions.skipBattle()) {
@@ -243,7 +251,7 @@ PG.main = (() => {
       }
 
       const now = Date.now();
-      if (now - sess.lastThrow < 1500) return;
+      if (now - sess.lastThrow < cfg.cooldowns.throw) return;
 
       if (sess.throws >= cfg.maxThrows) {
         sm.set('NEEDS_REVIEW', `max rzutów w potyczce (${cfg.maxThrows}) osiągnięty`);
@@ -273,7 +281,7 @@ PG.main = (() => {
         return;
       }
       const now = Date.now();
-      if (now - sess.lastHeal < 2500) return;
+      if (now - sess.lastHeal < cfg.cooldowns.heal) return;
       sess.lastHeal = now;
       if (cfg.autoHeal && PG.actions.heal()) {
         sess.healTries += 1;
@@ -380,5 +388,10 @@ PG.main = (() => {
     boot();
   }
 
-  return { start, stop, detectScreen, registerStates, persistConfig, loadConfig };
+  /** Restart interwału (np. po zmianie tickMs w panelu). */
+  function restartLoop() {
+    if (timer) startLoop();
+  }
+
+  return { start, stop, restartLoop, detectScreen, registerStates, persistConfig, loadConfig };
 })();

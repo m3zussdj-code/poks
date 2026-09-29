@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.3.0
+// @version      0.4.0
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.3.0',
+  version: '0.4.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -33,9 +33,22 @@ const PG = {
    * (persistencja po odświeżeniu strony).
    */
   config: {
-    tickMs: 1500,          // jak często maszyna stanów wykonuje tick
+    tickMs: 500,           // interwał pętli (im mniejszy, tym szybciej reaguje)
+    graceMs: 2500,         // po kliknięciu czekamy tyle na aktualizację ekranu
     logLimit: 500,         // rozmiar ring buffera telemetrii
     missThrottleMs: 15000, // nie spamuj logów powtarzającymi się selector_miss
+
+    // minimalne odstępy między klikami (ms) — chronią przed spamowaniem
+    // serwera gry; gracz klika szybciej niż raz na sekundę, więc 600-800
+    // to wciąż bezpiecznie poniżej ludzkiego burstu.
+    cooldowns: {
+      walk: 800,
+      team: 600,
+      throw: 800,
+      skip: 700,
+      heal: 1200,
+      location: 1500,
+    },
 
     // przełączniki widoczne w panelu:
     autoWalk: true,        // wędrówki ("Wędruj ponownie")
@@ -751,6 +764,8 @@ PG.sm = (() => {
   let state = 'STOPPED';
   let paused = false;
   let reason = '';
+  let stateVersion = 0; // ++ przy każdej realnej zmianie stanu
+  let depth = 0;        // zabezpieczenie przed nieskończoną rekurencją re-dispatch
   const history = []; // { ts, from, to, reason } — ostatnie 50 wpisów
   const handlers = {}; // state -> funkcja wywoływana w ticku
 
@@ -759,6 +774,7 @@ PG.sm = (() => {
     const from = state;
     state = next;
     reason = why;
+    stateVersion += 1;
     history.unshift({ ts: Date.now(), from, to: next, reason: pgText(why, 200) });
     if (history.length > 50) history.pop();
     PG.logger.stateChange(from, next, why);
@@ -770,16 +786,26 @@ PG.sm = (() => {
     handlers[name] = fn;
   }
 
-  /** Pojedynczy tick maszyny. Bezpieczny: wyjątek = NEEDS_REVIEW, nie crash. */
+  /**
+   * Pojedynczy tick maszyny. Bezpieczny: wyjątek = NEEDS_REVIEW, nie crash.
+   *
+   * PRĘDKOŚĆ: jeżeli handler zmienił stan, kolejny handler odpala się
+   * NATYCHMIAST (re-dispatch) — nie czekamy następnego ticka zegara.
+   * Ścieżka SCANNING → ENCOUNTER → klik trwa wtedy milisekundy od
+   * momentu, gdy gra zaktualizuje ekran (zamiast 2-3 ticków = wolno).
+   */
   function tick() {
     if (document.hidden) return;     // oszczędzamy zasoby w tle zakładki
     if (paused || state === 'STOPPED') return;
+    if (depth >= 5) return;          // twardy limit łańcucha re-dispatch
 
+    const vBefore = stateVersion;
     const h = handlers[state];
     if (!h) {
       set('NEEDS_REVIEW', `brak handlera dla stanu ${state}`);
       return;
     }
+    depth += 1;
     try {
       h();
     } catch (err) {
@@ -790,6 +816,10 @@ PG.sm = (() => {
       });
       set('NEEDS_REVIEW', `wyjątek: ${(err && err.message) || err}`);
     }
+    depth -= 1;
+
+    // Stan zmienił się w trakcie handlera → przetocz łańcuch od razu.
+    if (stateVersion !== vBefore && depth < 5) tick();
   }
 
   function start() {
@@ -1305,6 +1335,9 @@ PG.panel = (() => {
               <label class="field">Max rzutów / potyczkę
                 <input type="number" id="inThrows" min="1" max="10" />
               </label>
+              <label class="field">Tick pętli (ms)
+                <input type="number" id="inTick" min="150" max="5000" step="50" />
+              </label>
             </div>
           </div>
 
@@ -1388,6 +1421,12 @@ PG.panel = (() => {
       const v = Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 3));
       cfgSet('maxThrows', v, 'maxThrows');
     };
+    el('inTick').onchange = (e) => {
+      const v = Math.max(150, Math.min(5000, parseInt(e.target.value, 10) || 500));
+      cfgSet('tickMs', v, 'tickMs');
+      // nowy interwał działa od razu, bez restartu bota:
+      if (PG.main && typeof PG.main.restartLoop === 'function') PG.main.restartLoop();
+    };
   }
 
   /** Zapis wartości do konfiguracji + log (persistencja w main). */
@@ -1448,6 +1487,7 @@ PG.panel = (() => {
     fillSelect('selS2', ballOpts, (PG.config.balls.shiny || [])[1] || '');
 
     el('inThrows').value = PG.config.maxThrows;
+    el('inTick').value = PG.config.tickMs;
   }
 
   /** Snapshot ekranu: co bot „widzi” — do diagnostyki nowych ekranów. */
@@ -1717,7 +1757,15 @@ PG.main = (() => {
         if (saved.balls && typeof saved.balls === 'object') {
           saved.balls = { ...PG.config.balls, ...saved.balls };
         }
+        const isOldSave = !saved.cooldowns; // brak cooldownów = zapis z < v0.4.0
+        if (saved.cooldowns) {
+          saved.cooldowns = { ...PG.config.cooldowns, ...saved.cooldowns };
+        }
         Object.assign(PG.config, saved);
+        if (isOldSave) {
+          // Stary zapis miał tickMs1500 — wymuszamy nowy, szybszy tick.
+          PG.config.tickMs = 500;
+        }
       }
     } catch (_) { /* uszkodzony JSON → domyślne */ }
   }
@@ -1765,7 +1813,7 @@ PG.main = (() => {
         const target = questWalkTarget() || cfg.walkLocation || '';
         if (target && cfg.autoWalk) {
           const now = Date.now();
-          if (now - sess.lastLoc > 4000) {
+          if (now - sess.lastLoc > cfg.cooldowns.location) {
             sess.lastLoc = now;
             if (PG.actions.walkLocation(target)) setCurrentLoc(target);
           }
@@ -1774,7 +1822,7 @@ PG.main = (() => {
       }
 
       // 4) Nieznany ekran — grace period po kliknięciu (gra się jeszcze ładuje).
-      if (PG.actions.sinceLastAction() < 4000) return;
+      if (PG.actions.sinceLastAction() < cfg.graceMs) return;
 
       PG.logger.push('screen_unknown_snapshot', {
         integrityRoles: PG.selectors.integrityRoles(),
@@ -1799,7 +1847,7 @@ PG.main = (() => {
       const target = questWalkTarget();
       if (target && currentLoc() !== target) {
         const now = Date.now();
-        if (now - sess.lastLoc > 4000) {
+        if (now - sess.lastLoc > cfg.cooldowns.location) {
           sess.lastLoc = now;
           if (PG.actions.walkLocation(target)) {
             PG.logger.push('quest_location_sync', { target, previous: currentLoc() });
@@ -1811,7 +1859,7 @@ PG.main = (() => {
       }
 
       const now2 = Date.now();
-      if (now2 - sess.lastWalk < 2000) return; // nie klikaj szybciej niż co 2 s
+      if (now2 - sess.lastWalk < cfg.cooldowns.walk) return; // min. odstęp między klikami
       if (cfg.autoWalk) {
         sess.lastWalk = now2;
         if (!PG.actions.walkAgain()) {
@@ -1827,7 +1875,7 @@ PG.main = (() => {
         return;
       }
       const now = Date.now();
-      if (now - sess.lastTeamClick < 1500) return;
+      if (now - sess.lastTeamClick < cfg.cooldowns.team) return;
       sess.lastTeamClick = now;
 
       const ok = PG.actions.selectTeamMember(cfg.teamSlot);
@@ -1847,7 +1895,7 @@ PG.main = (() => {
       if (!cfg.autoSkipBattle) return; // gra sama dokończy rundy
 
       const now = Date.now();
-      if (now - sess.lastSkip < 2000) return;
+      if (now - sess.lastSkip < cfg.cooldowns.skip) return;
       sess.lastSkip = now;
 
       if (PG.actions.skipBattle()) {
@@ -1873,7 +1921,7 @@ PG.main = (() => {
       }
 
       const now = Date.now();
-      if (now - sess.lastThrow < 1500) return;
+      if (now - sess.lastThrow < cfg.cooldowns.throw) return;
 
       if (sess.throws >= cfg.maxThrows) {
         sm.set('NEEDS_REVIEW', `max rzutów w potyczce (${cfg.maxThrows}) osiągnięty`);
@@ -1903,7 +1951,7 @@ PG.main = (() => {
         return;
       }
       const now = Date.now();
-      if (now - sess.lastHeal < 2500) return;
+      if (now - sess.lastHeal < cfg.cooldowns.heal) return;
       sess.lastHeal = now;
       if (cfg.autoHeal && PG.actions.heal()) {
         sess.healTries += 1;
@@ -2010,7 +2058,12 @@ PG.main = (() => {
     boot();
   }
 
-  return { start, stop, detectScreen, registerStates, persistConfig, loadConfig };
+  /** Restart interwału (np. po zmianie tickMs w panelu). */
+  function restartLoop() {
+    if (timer) startLoop();
+  }
+
+  return { start, stop, restartLoop, detectScreen, registerStates, persistConfig, loadConfig };
 })();
 
 })();

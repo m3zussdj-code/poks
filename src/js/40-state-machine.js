@@ -22,6 +22,8 @@ PG.sm = (() => {
   let state = 'STOPPED';
   let paused = false;
   let reason = '';
+  let stateVersion = 0; // ++ przy każdej realnej zmianie stanu
+  let depth = 0;        // zabezpieczenie przed nieskończoną rekurencją re-dispatch
   const history = []; // { ts, from, to, reason } — ostatnie 50 wpisów
   const handlers = {}; // state -> funkcja wywoływana w ticku
 
@@ -30,6 +32,7 @@ PG.sm = (() => {
     const from = state;
     state = next;
     reason = why;
+    stateVersion += 1;
     history.unshift({ ts: Date.now(), from, to: next, reason: pgText(why, 200) });
     if (history.length > 50) history.pop();
     PG.logger.stateChange(from, next, why);
@@ -41,16 +44,26 @@ PG.sm = (() => {
     handlers[name] = fn;
   }
 
-  /** Pojedynczy tick maszyny. Bezpieczny: wyjątek = NEEDS_REVIEW, nie crash. */
+  /**
+   * Pojedynczy tick maszyny. Bezpieczny: wyjątek = NEEDS_REVIEW, nie crash.
+   *
+   * PRĘDKOŚĆ: jeżeli handler zmienił stan, kolejny handler odpala się
+   * NATYCHMIAST (re-dispatch) — nie czekamy następnego ticka zegara.
+   * Ścieżka SCANNING → ENCOUNTER → klik trwa wtedy milisekundy od
+   * momentu, gdy gra zaktualizuje ekran (zamiast 2-3 ticków = wolno).
+   */
   function tick() {
     if (document.hidden) return;     // oszczędzamy zasoby w tle zakładki
     if (paused || state === 'STOPPED') return;
+    if (depth >= 5) return;          // twardy limit łańcucha re-dispatch
 
+    const vBefore = stateVersion;
     const h = handlers[state];
     if (!h) {
       set('NEEDS_REVIEW', `brak handlera dla stanu ${state}`);
       return;
     }
+    depth += 1;
     try {
       h();
     } catch (err) {
@@ -61,6 +74,10 @@ PG.sm = (() => {
       });
       set('NEEDS_REVIEW', `wyjątek: ${(err && err.message) || err}`);
     }
+    depth -= 1;
+
+    // Stan zmienił się w trakcie handlera → przetocz łańcuch od razu.
+    if (stateVersion !== vBefore && depth < 5) tick();
   }
 
   function start() {
