@@ -1,6 +1,6 @@
 # PG Edu Bot — skompaktowany stan ( czytaj TO zamiast full memory )
 
-Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **1500124 = v0.10.2**, testy **80/80 + driver 16/16**.
+Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **1819ed2 = v0.10.3**, testy **80/80 + driver 16/16**.
 Serwer dist: port **8377** (statyczny `python3 -m http.server` → `dist/`); przed podaniem URL → `curl -sf localhost:8377/pokeglory-bot.user.js | head -4`, restart = `start_process`.
 
 ## Konwencje (twarde)
@@ -82,6 +82,45 @@ błąd dispatcha → lokalny catch + ponowienie (bez resetu sesji, żądanie ży
 userscript: event `bridge_undelivered` gdy żądanie >4 s niezniknięte. **Diagnoza: jeśli export
 pokaże `throw_unverified` bez `bridge_undelivered` — problem po stronie gry/timing; z
 `bridge_undelivered` — driver nie dispatchuje (patrz terminal drivera).**
+
+## v0.10.3 — ZROBIONE (`1819ed2`, auto-rescan po NEEDS_REVIEW + grace)
+
+Trzeci eksport (v0.10.2, 15:51–15:53): qty 2698→2668 co rzut ✓, HEAL dialog PA
+2→155 ✓ (flow v0.8.0 działa w grze!), walk_again rejestruje ✓, 0×
+bridge_undelivered ✓, 2× bridge_fallback not_clickable → lokalny fallback
+zadziałał (nie naprawiać). Zostały 3 zacięcia → wszystkie poniżej.
+
+1. **Auto-rescan (pomysł usera „czy nie przydałby się jakiś auto rescan”)** —
+   NOWY `sm.register('NEEDS_REVIEW')` w 70-main (po SPECIAL_ENCOUNTER):
+   - `!cfg.autoReview || sm.paused` → out;
+   - `sm.history[sm.history.length-1].to !== 'NEEDS_REVIEW'` → out;
+   - `Date.now()-top.ts < jrand(cfg.autoReviewMs)` (6000 ±35% ≈ 4–8 s) → out;
+   - `detectScreen()` ∉ KNOWN_SCREENS → out (unknown zostaje do człowieka);
+   - inaczej `PG.logger.push('auto_rescan',{screen,reason:sm.reason})` +
+     `sm.acknowledge()` — patch z v0.10.1 zeruje throws/unverifiedTries/
+     pendingThrow/walkDisabledTries/walkMissingTries/teamMissingTries → SCANNING.
+   KNOWN_SCREENS = encounter, ball_select, battle, battle_result, walk_ready,
+   berry_select, fossil, kokpit (Set zadeklarowany w registerStates).
+   Domyślne: `autoReview:true` (00), `autoReviewMs:6000` (00 po graceMs);
+   TOGGLES w panelu: `['autoReview','Auto-rescan po NEEDS_REVIEW']`.
+2. **WANDER — „Wędruj ponownie” disabled**: `walkAgain()` false →
+   `PG.selectors.resolve('walk-again-button',{reportMiss:false})`; przycisk
+   jest i `disabled||aria-disabled==='true'` → `sess.walkDisabledTries++`,
+   REVIEW „zablokowany >8 s” dopiero `>8` prób (timeout ~4–6 s); przyciska
+   brak → `sess.walkMissingTries++`, REVIEW od `>=3`. Sukces `walkAgain()`
+   zeruje oba. (W eksporcie REVIEW padał po 620 ms, bo click() na disabled
+   zwraca false od razu — a disabled = poprzedni klik w przetwarzaniu.)
+3. **ENCOUNTER — brak drużyny z grace**: `ok` → `encounterTries++` +
+   `teamMissingTries=0`; `!ok` → `teamMissingTries++`, REVIEW „brak drużyny
+   na ekranie spotkania (5 prób)” dopiero `>4` (~3 s z cooldownem
+   `lastTeamClick`); przy `ok` — stare „nie startuje walki (3 próby)” bez
+   zmian. (Wcześniej `!ok` = natychmiast REVIEW; w eksporcie 2×: ok, a
+   +580 ms drużyna już zniknęła w trakcie przejścia.)
+4. Liczniki w sess init + `resetSessionForScreen` + ack-patch.
+Kotwice: WANDER blok `if (cfg.autoWalk)` @~275, ENCOUNTER `const ok =
+selectTeamMember` @~318 (bramka `lastTeamClick` nad selekcją bez zmian),
+handler NEEDS_REVIEW po SPECIAL_ENCOUNTER — komentarz „NEEDS_REVIEW bez
+handlera” zastąpiony. Wersja 0.10.3 (meta+00). Build 106725 B, 80/80+16/16.
 
 ## v0.10.2 — ZROBIONE (`1500124`, klik tylko w widoczne/klikalne miejsce)
 Diagnoza user: klikaliśmy w miejsce niewidoczne na ekranie (rect z getBoundingClientRect
