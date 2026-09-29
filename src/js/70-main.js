@@ -161,6 +161,18 @@ PG.main = (() => {
 
     // „Wznowię sam” musi ZEROWAĆ liczniki rzutów — bez tego NEEDS_REVIEW
     // „max rzutów” wracał natychmiast (ekran się nie zmienił, sess.throws=3).
+    // ── Komunikat REVIEW dla wstrzymanego kliknięcia (tryb CDP) ────────────
+    // fire() z cdpBridge=ON nie schodzi do lokalnego el.click() (antycheat
+    // +80 pkt) — zwraca 'wait'. Jeśli ostatnie wstrzymanie jest świeże,
+    // podajemy prawdziwą przyczynę zamiast „brak przycisku”.
+    const waitReview = (fallback) => {
+      const w = PG.actions.lastWait && PG.actions.lastWait();
+      if (!w) return fallback;
+      return w === 'no_driver'
+        ? 'klik wstrzymany: driver CDP nie odpowiada (uruchom pg-cdp-driver)'
+        : 'klik wstrzymany: element zasłonięty lub poza kadrem (CDP)';
+    };
+
     if (!sm.__ackResetsCatch) {
       sm.__ackResetsCatch = true;
       const ack = sm.acknowledge;
@@ -297,7 +309,7 @@ PG.main = (() => {
           } else {
             sess.walkMissingTries += 1;
             if (sess.walkMissingTries >= 3) {
-              sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie” (3 próby)');
+              sm.set('NEEDS_REVIEW', waitReview('brak przycisku „Wędruj ponownie” (3 próby)'));
             }
           }
         }
@@ -329,7 +341,7 @@ PG.main = (() => {
             return;
           }
           if (!PG.actions.healTeam()) {
-            sm.set('NEEDS_REVIEW', 'brak przycisku leczenia na ekranie spotkania');
+            sm.set('NEEDS_REVIEW', waitReview('brak przycisku leczenia na ekranie spotkania'));
             return;
           }
           return; // kliknięte — nie wybieramy mona, aż HP się podniesie
@@ -350,7 +362,7 @@ PG.main = (() => {
         // przerywamy od razu; ~4 ticki z cooldownem team zanim REVIEW.
         sess.teamMissingTries += 1;
         if (sess.teamMissingTries > 4) {
-          sm.set('NEEDS_REVIEW', 'brak drużyny na ekranie spotkania (5 prób)');
+          sm.set('NEEDS_REVIEW', waitReview('brak drużyny na ekranie spotkania (5 prób)'));
           return;
         }
       }
@@ -442,7 +454,8 @@ PG.main = (() => {
       sess.lastThrow = now;
       const shiny = PG.actions.isShinyEncounter();
       const thrown = PG.actions.throwBall(shiny, sess.throws + sess.unverifiedTries + 1);
-      if (!thrown) sm.set('NEEDS_REVIEW', 'brak piłki z konfiguracji (priorytety P1/P2 niedostępne)');
+      if (!thrown) sm.set('NEEDS_REVIEW',
+        waitReview('brak piłki z konfiguracji (priorytety P1/P2 niedostępne)'));
       else sess.pendingThrow = thrown;
     });
 
