@@ -4,6 +4,7 @@
  * Detekcja ekranów (v3, oparta o snapshoty z /mapa):
  *   encounter  → ENCOUNTER (wybór drużyny)
  *   ball_select→ CATCH     (rzut po wygranej)
+ *   battle_result→ WANDER  (podsumowanie po walce → „Wędruj ponownie")
  *   battle     → BATTLE    (skip animacji)
  *   walk_ready → WANDER
  *   kokpit     → SCANNING  (opcjonalny start z karty lokacji)
@@ -83,6 +84,9 @@ PG.main = (() => {
     if (PG.selectors.resolve('team-selection', { reportMiss: false })) return 'encounter';
     if (PG.selectors.resolve('berry-button', { reportMiss: false })) return 'berry_select';
     if (PG.actions.parseBalls().length > 0) return 'ball_select';
+    // Podsumowanie walki PRZED wykrywaniem walki: „Przejdź do końca walki"
+    // zostaje w DOM także na ekranie wyniku (rola result-actions).
+    if (PG.selectors.resolve('battle-result', { reportMiss: false })) return 'battle_result';
     if (PG.selectors.resolve('battle-skip-button', { reportMiss: false })) return 'battle';
     if (PG.selectors.resolve('walk-again-button', { reportMiss: false })) return 'walk_ready';
     if (location.pathname.startsWith('/kokpit') || /kokpit/i.test(document.title)) return 'kokpit';
@@ -151,8 +155,11 @@ PG.main = (() => {
         return;
       }
 
-      // 3) Znane ekrany bez akcji.
-      if (screen === 'walk_ready') { sm.set('WANDER', 'rozpoznany ekran: wędrówka'); return; }
+      // 3) Znane ekrany bez akcji (mapa albo podsumowanie po walce → oba = wędrówka).
+      if (screen === 'walk_ready' || screen === 'battle_result') {
+        sm.set('WANDER', `rozpoznany ekran: ${screen === 'battle_result' ? 'wynik walki' : 'wędrówka'}`);
+        return;
+      }
 
       if (screen === 'kokpit') {
         // Priorytet: cel questu WALK_IN > ręcznie ustawiona lokacja startowa.
@@ -179,7 +186,9 @@ PG.main = (() => {
 
     sm.register('WANDER', () => {
       const screen = detectScreen();
-      if (screen !== 'walk_ready') {
+      // walk_ready = mapa; battle_result = podsumowanie po walce (trener) —
+      // na obu działa „Wędruj ponownie" (rola walk-again-button).
+      if (screen !== 'walk_ready' && screen !== 'battle_result') {
         sm.set('SCANNING', `ekran zmienił się po wędrówce (${screen})`);
         return;
       }

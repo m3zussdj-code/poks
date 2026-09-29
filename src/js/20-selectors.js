@@ -56,6 +56,13 @@ PG.selectors = (() => {
     'battle-skip-button': [
       { sel: 'button', re: /Przejdź do końca walki/ },
     ],
+    // Podsumowanie PO walce (np. trener): rola result-actions + „Wróć do mapy".
+    // UWAGA: „Przejdź do końca walki" z ekranu walki ZOSTAJE w DOM na wyniku,
+    // dlatego detectScreen sprawdza battle-result PRZED battle-skip-button.
+    'battle-result': [
+      '[data-pokeglory-integrity-role="result-actions"]',
+      { sel: 'button', re: /Wróć do mapy/ },
+    ],
     'berry-button': [
       { sel: 'button', re: /Zbierz jagody/ },
     ],
