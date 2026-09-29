@@ -41,6 +41,9 @@ PG.main = (() => {
     healNeed: 0,
     pendingThrow: null,
     unverifiedTries: 0,
+    walkDisabledTries: 0,
+    walkMissingTries: 0,
+    teamMissingTries: 0,
   };
 
   const lastScreen = { value: null };
@@ -68,6 +71,9 @@ PG.main = (() => {
     sess.healNeed = 0;
     sess.pendingThrow = null;
     sess.unverifiedTries = 0;
+    sess.walkDisabledTries = 0;
+    sess.walkMissingTries = 0;
+    sess.teamMissingTries = 0;
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
 
@@ -162,6 +168,9 @@ PG.main = (() => {
         sess.throws = 0;
         sess.unverifiedTries = 0;
         sess.pendingThrow = null;
+        sess.walkDisabledTries = 0;
+        sess.walkMissingTries = 0;
+        sess.teamMissingTries = 0;
         return ack.apply(sm, arguments);
       };
     }
@@ -272,8 +281,25 @@ PG.main = (() => {
       if (now2 - sess.lastWalk < jrand(cfg.cooldowns.walk)) return; // min. odstęp między klikami
       if (cfg.autoWalk) {
         sess.lastWalk = now2;
-        if (!PG.actions.walkAgain()) {
-          sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie”');
+        if (PG.actions.walkAgain()) {
+          sess.walkDisabledTries = 0;
+          sess.walkMissingTries = 0;
+        } else {
+          // click() zwraca false też przy DISABLED — a disabled zwykle znaczy
+          // „poprzedni klik jest przetwarzany przez grę”. Nie przerywamy
+          // od razu (v0.10.2 parkował tu po ~620 ms); liczymy próby.
+          const wbtn = PG.selectors.resolve('walk-again-button', { reportMiss: false });
+          if (wbtn && (wbtn.disabled || wbtn.getAttribute('aria-disabled') === 'true')) {
+            sess.walkDisabledTries += 1;
+            if (sess.walkDisabledTries > 8) {
+              sm.set('NEEDS_REVIEW', '„Wędruj ponownie” zablokowany >8 s — klik nie przechodzi');
+            }
+          } else {
+            sess.walkMissingTries += 1;
+            if (sess.walkMissingTries >= 3) {
+              sm.set('NEEDS_REVIEW', 'brak przycisku „Wędruj ponownie” (3 próby)');
+            }
+          }
         }
       }
     });
@@ -316,10 +342,20 @@ PG.main = (() => {
       sess.lastTeamClick = now;
 
       const ok = PG.actions.selectTeamMember(cfg.teamSlot);
-      if (ok) sess.encounterTries += 1;
-      if (!ok || sess.encounterTries >= 3) {
-        sm.set('NEEDS_REVIEW',
-          ok ? 'wybór Pokémona nie startuje walki (3 próby)' : 'brak drużyny na ekranie spotkania');
+      if (ok) {
+        sess.encounterTries += 1;
+        sess.teamMissingTries = 0;
+      } else {
+        // Drużyna bywa chwilowo niewidoczna (przejście animacji) — nie
+        // przerywamy od razu; ~4 ticki z cooldownem team zanim REVIEW.
+        sess.teamMissingTries += 1;
+        if (sess.teamMissingTries > 4) {
+          sm.set('NEEDS_REVIEW', 'brak drużyny na ekranie spotkania (5 prób)');
+          return;
+        }
+      }
+      if (ok && sess.encounterTries >= 3) {
+        sm.set('NEEDS_REVIEW', 'wybór Pokémona nie startuje walki (3 próby)');
       }
     });
 
@@ -618,7 +654,26 @@ PG.main = (() => {
       }
     });
 
-    // STOPPED i NEEDS_REVIEW celowo bez handlera — bot ma stać bezczynnie.
+    // ── Auto-rescan: NEEDS_REVIEW z znanym ekranem wraca sam do SCANNING ──
+    // Zabezpieczenie przed zacięciami przejściowymi (disabled przycisk,
+    // chwilowy brak drużyny, glitch drivera). Nieznany ekran zostaje do
+    // decyzji człowieka — chyba że gra wróci na znany ekran.
+    const KNOWN_SCREENS = new Set([
+      'encounter', 'ball_select', 'battle', 'battle_result', 'walk_ready',
+      'berry_select', 'fossil', 'kokpit',
+    ]);
+    sm.register('NEEDS_REVIEW', () => {
+      if (!cfg.autoReview || sm.paused) return;
+      const top = sm.history[sm.history.length - 1];
+      if (!top || top.to !== 'NEEDS_REVIEW') return;
+      if (Date.now() - top.ts < jrand(cfg.autoReviewMs)) return;
+      const screen = detectScreen();
+      if (!KNOWN_SCREENS.has(screen)) return;
+      PG.logger.push('auto_rescan', { screen, reason: sm.reason || null });
+      sm.acknowledge(); // patch zeruje liczniki → SCANNING
+    });
+
+    // STOPPED celowo bez handlera — bot ma stać bezczynnie.
   }
 
   // ── pętla ─────────────────────────────────────────────────────────────────

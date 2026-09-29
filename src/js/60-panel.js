@@ -43,6 +43,7 @@ PG.panel = (() => {
     ['pauseOnSpecial', 'Pauza: shiny/tutor'],
     ['debugConsole', 'Log do konsoli'],
     ['cdpBridge', 'Klik przez CDP (trusted)'],
+    ['autoReview', 'Auto-rescan po NEEDS_REVIEW'],
   ];
 
   const CSS = `

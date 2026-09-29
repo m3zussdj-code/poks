@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.10.2',
+  version: '0.10.3',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -17,6 +17,7 @@ const PG = {
   config: {
     tickMs: 500,           // BAZOWY interwał pętli (zmodyfikowany przez jitter)
     graceMs: 2500,         // po kliknięciu czekamy tyle na aktualizację ekranu
+    autoReviewMs: 6000,    // auto-rescan: tyle czeka NEEDS_REVIEW (znany ekran)
     jitter: 0.35,          // ±35% losowania wokół KAŻDEGO interwału i cooldownu
                            // (0 = sztywne, robotnicze odstępy — nie używaj!)
     logLimit: 500,         // rozmiar ring buffera telemetrii
@@ -49,6 +50,7 @@ const PG = {
     autoManage: true,     // rezerwa pełna → ewoluuj (dialogi) → sprzedaj (dialog)
     autoResume: true,      // wznowienie działania po odświeżeniu strony
     cdpBridge: true,       // klik przez driver CDP (trusted events) zamiast el.click()
+    autoReview: true,      // NEEDS_REVIEW z znanym ekranem wraca sam do SCANNING
     questLocation: true,   // cel z questa WALK_IN steruje wyborem lokacji
     pauseOnSpecial: true,  // shiny / tutor → zatrzymaj się i pokaż NEEDS_REVIEW
     debugConsole: true,    // lustrzane logi do konsoli przeglądarki
