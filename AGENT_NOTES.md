@@ -1,6 +1,6 @@
 # PG Edu Bot — skompaktowany stan ( czytaj TO zamiast full memory )
 
-Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **d5319b8 = v0.8.0**, testy **72/72**.
+Repo `/home/user/poks`, branch `arena/01a0ec56-poks`, HEAD **c8fa261 = v0.9.0**, testy **74/74**.
 Serwer dist: port **8377** (statyczny `python3 -m http.server` → `dist/`); przed podaniem URL → `curl -sf localhost:8377/pokeglory-bot.user.js | head -4`, restart = `start_process`.
 
 ## Konwencje (twarde)
@@ -20,7 +20,7 @@ Serwer dist: port **8377** (statyczny `python3 -m http.server` → `dist/`); prz
 - `40` state machine: STATES, `tick()` re-dispatch (depth 5), NEEDS_REVIEW bez handlera
 - `50` actions: **`parseTeamHpText` (HP = zawsze `pairs[1]`! para[0] bez spacji zlewa poziom+EXP)**, `teamHpList`/`teamLowHp` (filtr `/Lv\./`, liczy „Niezdolny…"), `healTeam` (prefer widoczny), `teamButtons`/`peekTeam` (`/^Lv\./` = bez Niezdolnych), `click()`/`isVisible`, `throwBall`
 - `60` panel: BADGE, TOGGLES (pętla `wire()`), inputy `inThrows/inTick/inJitter/inHealHp` (wzór: clamp + `cfgSet`), `render()` → `syncAutomationUI()` fill
-- `70` main: `detectScreen` encounter→berry→ball→battle_result→battle→walk_ready→kokpit→unknown; SCANNING sekcja 1 ekrany akcji, 3 walk_ready|battle_result→WANDER; `sess` + `resetSessionForScreen`; **ENCOUNTER: autoHealTeam → `teamLowHp` → `healTeam` (cooldown, `teamHealTries>5`→NEEDS_REVIEW) → dopiero `selectTeamMember`**
+- `70` main: `detectScreen` encounter→berry→ball→**fossil**→battle_result→battle→walk_ready→kokpit→unknown; SCANNING sekcja 1 ekrany akcji (FOSSIL←fossil), 3 walk_ready|battle_result→WANDER; `sess` + `resetSessionForScreen`; **ENCOUNTER: autoHealTeam → `teamLowHp` → `healTeam` (cooldown, `teamHealTries>5`→NEEDS_REVIEW) → dopiero `selectTeamMember`**
 
 ## v0.6.0 — ZROBIONE (heal <50%)
 Toggle „Leczenie HP (< próg)" + input % (10–90). Hook w ENCOUNTER przed selekcją; reset `teamHealTries` gdy HP ok.
@@ -37,6 +37,13 @@ HEAL klika `heal-ap-button` → dialog „Zregenerować punkty akcji?" → HEAL 
 → PA 155/155 → `ap ≥ healBelow` → SCANNING. Inny dialog w HEAL → ciche czekanie. `dialogConfirmText(kind)`
 czysty (ap→`Regeneruj`, evolve→`Ewoluuj wszystkie`, sell→`Sprzedaj`), testy 72/72. Dialog NIE w detectScreen
 (wpada w battle_result) — obsługa w HEAL, nie w INVENTORY.
+
+## v0.9.0 — ZROBIONE (`c8fa261`, poszukiwacz skamielin — „zawsze odkopuj")
+Ekran fossil = walk-again + result-actions + „Odkop nagrodę (10 PA)"; detectScreen: `fossil-dig-button`
+PRZED battle-result. Stan FOSSIL (wzór BERRY): cooldown `fossil` 900, `fossilTries` >5 → NEEDS_REVIEW,
+dlg `other` → NEEDS_REVIEW snapshot. PA < koszt: autoHeal → `sess.healNeed=cost` → HEAL z progiem
+`max(healBelow, healNeed)` (reset przy sukcesie i w resetSessionForScreen) → powrót → kopanie;
+autoHeal off → `walkAgain()` (pomijamy, bez pętli FOSSIL↔WANDER). `parseDigCost` z tekstu przycisku (10).
 
 ## Otwarte (nie zapomnieć)
 1. v0.5.0: co się pojawia PO „Zbierz jagody" (jeśli NEEDS_REVIEW → snapshot).
