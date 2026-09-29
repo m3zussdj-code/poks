@@ -45,6 +45,18 @@ dlg `other` → NEEDS_REVIEW snapshot. PA < koszt: autoHeal → `sess.healNeed=c
 `max(healBelow, healNeed)` (reset przy sukcesie i w resetSessionForScreen) → powrót → kopanie;
 autoHeal off → `walkAgain()` (pomijamy, bez pętli FOSSIL↔WANDER). `parseDigCost` z tekstu przycisku (10).
 
+## Antycheat gry (info z `wilderness-click-log-*.js`, 2026-09-29)
+- Strong signal = `inputAnomalyScore ≥ 70` LUB `browserAutomation ≥ 50` LUB `emulator ≥ 50` → `console.warn`
+  + payload na serwer gry (kolejka `pokeglory.pending-wilderness-click-log`, endpoint
+  `reportWildernessUnmatchedPointerTaps`). Śledzą też `previousClickDelayMs` i `nearWalkAgain`.
+- Klik bota (`element.click()`) = `event.untrusted` +80 + `activation.unknown` +35 → score 100 → **flaga
+  ZAWSZE na instrumentowanych akcjach** (np. `team_pokemon_battle_card`); **nie do usunięcia z userscripta**
+  (isTrusted nie do sfałszowania; pointer-synth obniżyłby ~100→80, flaga zostaje). NIE kara automatycznie
+  w tym wycinku — warning + telemetria.
+- Czyste: `navigator.webdriver`/selenium/playwright globals w normalnej TM (automationScore 0);
+  sygnały `dom.*` (+35/+65) tylko dla modyfikujących DOM gry — my read/click → nie zapalają się.
+- User dostał ostrzeżenie na kliknięciu drużyny w ENCOUNTER — wyjaśnić, decyzja: bez zmian (rekomendacja).
+
 ## Otwarte (nie zapomnieć)
 1. v0.5.0: co się pojawia PO „Zbierz jagody" (jeśli NEEDS_REVIEW → snapshot).
 2. Snapshot „🗺 Pełny widok" (`openQuestTab`).
