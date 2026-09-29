@@ -228,6 +228,21 @@ async function main() {
       8000, 'dispatch po scenariuszu stale'
     );
     check(true, 'żądanie po restarcie/stare nie blokuje kolejnego (id=79 skliknięty)');
+
+    // 5) koordynaty spoza viewportu → clamped do [0,w-1]×[0,h-1]
+    const base = state.recorded.length;
+    state.pollQueue.push([80, -40, 5000, Date.now(), 'visible', 1280, 720]);
+    await waitFor(
+      () => state.recorded.filter((r) => r.type === 'mousePressed').length === 3
+        && state.clears.length >= 4,
+      8000, 'dispatch clamp'
+    );
+    const late = state.recorded.slice(base);
+    const p5 = late.find((r) => r.type === 'mousePressed');
+    check(p5 && p5.x === 0 && p5.y === 719,
+      `spoza viewportu → pressed clamped do (0,719) (jest ${p5 && p5.x},${p5 && p5.y})`);
+    check(late.every((r) => r.x >= 0 && r.x <= 1279 && r.y >= 0 && r.y <= 719),
+      'wszystkie eventy scenariusza 5 wewnątrz viewportu 1280×720');
   } catch (e) {
     fails.push(`EXC: ${e.message}`);
     console.error(`  ✗ ${e.message}`);

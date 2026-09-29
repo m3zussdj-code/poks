@@ -114,15 +114,18 @@ async function heartbeat(ok = true) {
   }, sessionId);
 }
 
-/** Klik jak u człowieka: start obok, trajektoria 3–5 ruchów, oddech, nacisk. */
-async function humanClick(x, y) {
-  const sx = Math.round(x + (Math.random() < 0.5 ? -1 : 1) * rnd(24, 70));
-  const sy = Math.round(y + rnd(-40, 40));
+/** Klik jak u człowiek: start obok, trajektoria 3–5 ruchów, oddech, nacisk.
+ *  Wszystkie koordynaty przycięte do viewportu [0,hi-1] (spoza Chrome
+ *  może odrzucić dispatch → przerwana sekwencja). */
+async function humanClick(x, y, vx, vy) {
+  const clamp = (v, hi) => Math.min(Math.max(0, Math.round(v)), Math.max(1, hi) - 1);
+  const sx = clamp(x + (Math.random() < 0.5 ? -1 : 1) * rnd(24, 70), vx);
+  const sy = clamp(y + rnd(-40, 40), vy);
   const steps = 3 + Math.floor(Math.random() * 3); // 3..5
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
-    const mx = Math.round(sx + (x - sx) * t + rnd(-1.5, 1.5));
-    const my = Math.round(sy + (y - sy) * t + rnd(-1.5, 1.5));
+    const mx = clamp(sx + (x - sx) * t + rnd(-1.5, 1.5), vx);
+    const my = clamp(sy + (y - sy) * t + rnd(-1.5, 1.5), vy);
     await send('Input.dispatchMouseEvent',
       { type: 'mouseMoved', x: mx, y: my, button: 'left', buttons: 0, pointerType: 'mouse' },
       sessionId);
@@ -140,7 +143,7 @@ async function humanClick(x, y) {
 
 const POLL_EXPR =
   'window.__pgClick ? [window.__pgClick.id, window.__pgClick.x, window.__pgClick.y, ' +
-  'window.__pgClick.ts, document.visibilityState] : null';
+  'window.__pgClick.ts, document.visibilityState, window.innerWidth, window.innerHeight] : null';
 
 async function poll() {
   const r = await send('Runtime.evaluate',
@@ -153,6 +156,8 @@ async function poll() {
   const y = Math.round(Number(v[2]));
   const ts = Number(v[3]);
   const vis = String(v[4] || '');
+  const vx = Number.isFinite(Number(v[5])) && Number(v[5]) > 0 ? Number(v[5]) : 1920;
+  const vy = Number.isFinite(Number(v[6])) && Number(v[6]) > 0 ? Number(v[6]) : 1080;
   if (!Number.isFinite(id) || id === lastClickId) return;
 
   const clear =
@@ -177,10 +182,20 @@ async function poll() {
     catch (_) { /* i tak spróbujemy kliknąć */ }
   }
 
-  await humanClick(x, y);
+  // Koordynaty ZAWSZE wewnątrz viewportu (spoza = Chrome odrzuca sekwencję).
+  const cx = Math.min(Math.max(0, x), vx - 1);
+  const cy = Math.min(Math.max(0, y), vy - 1);
+  try {
+    await humanClick(cx, cy, vx, vy);
+  } catch (e) {
+    // Nie zbijamy sesji — żądanie zostaje i ponawiamy w kolejnym pollu,
+    // dopóki nie przekroczy MAX_AGE (klik sprayowy zamiast reconnect stormu).
+    log(`dispatch nie przeszedł (${e.message}) — ponowię`);
+    return;
+  }
   lastClickId = id;
   await send('Runtime.evaluate', { expression: clear }, sessionId);
-  log(`klik id=${id} @ ${x},${y} (trusted)`);
+  log(`klik id=${id} @ ${cx},${cy} (trusted)`);
 }
 
 async function main() {

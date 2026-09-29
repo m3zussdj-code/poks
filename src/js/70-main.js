@@ -39,6 +39,8 @@ PG.main = (() => {
     fossilTries: 0,
     lastFossil: 0,
     healNeed: 0,
+    pendingThrow: null,
+    unverifiedTries: 0,
   };
 
   const lastScreen = { value: null };
@@ -64,6 +66,8 @@ PG.main = (() => {
     sess.manageSellTries = 0;
     sess.fossilTries = 0;
     sess.healNeed = 0;
+    sess.pendingThrow = null;
+    sess.unverifiedTries = 0;
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
 
@@ -148,6 +152,19 @@ PG.main = (() => {
   function registerStates() {
     const sm = PG.sm;
     const cfg = PG.config;
+
+    // „Wznowię sam” musi ZEROWAĆ liczniki rzutów — bez tego NEEDS_REVIEW
+    // „max rzutów” wracał natychmiast (ekran się nie zmienił, sess.throws=3).
+    if (!sm.__ackResetsCatch) {
+      sm.__ackResetsCatch = true;
+      const ack = sm.acknowledge;
+      sm.acknowledge = function () {
+        sess.throws = 0;
+        sess.unverifiedTries = 0;
+        sess.pendingThrow = null;
+        return ack.apply(sm, arguments);
+      };
+    }
 
     sm.register('SCANNING', () => {
       if (cfg.autoQuests) {
@@ -341,18 +358,56 @@ PG.main = (() => {
       }
 
       const now = Date.now();
-      if (now - sess.lastThrow < jrand(cfg.cooldowns.throw)) return;
+
+      // 1) Weryfikacja poprzedniego rzutu (po ≥1,2 s — serwer potrzebuje
+      //    czasu na aktualizację qty). Qty na karty = jedyny sygnał, że rzut
+      //    zarejestrował się u gry; qty bez zmian = klik nie przeszedł.
+      if (sess.pendingThrow && now - sess.lastThrow >= 1200) {
+        const ballsNow = PG.actions.parseBalls();
+        const cur = ballsNow.find((x) => x.name === sess.pendingThrow.name);
+        if (!cur && ballsNow.length) {
+          // karta naszej piłki zniknęła przy pełnej liście → qty 0 = zużyta
+          sess.throws += 1;
+          sess.pendingThrow = null;
+        } else if (cur) {
+          if (cur.qty === sess.pendingThrow.qty) {
+            sess.unverifiedTries += 1;
+            PG.logger.push('throw_unverified', {
+              name: sess.pendingThrow.name, qty: sess.pendingThrow.qty,
+              attempt: sess.throws + sess.unverifiedTries + 1,
+              unverified: sess.unverifiedTries,
+            });
+          } else {
+            sess.throws += 1; // piłka zużyta → rzut przyjęty (liczy się do max)
+          }
+          sess.pendingThrow = null;
+        }
+        // pusta lista kart = ekran się buduje → czekamy
+      }
+      if (sess.pendingThrow) return; // czekamy na weryfikację poprzedniego rzutu
 
       if (sess.throws >= cfg.maxThrows) {
         sm.set('NEEDS_REVIEW', `max rzutów w potyczce (${cfg.maxThrows}) osiągnięty`);
         return;
       }
+      if (sess.unverifiedTries >= cfg.maxThrows * 2) {
+        sm.set('NEEDS_REVIEW',
+          `rzuty nie rejestrują się (${sess.unverifiedTries}× bez zużycia piłek) — sprawdź driver CDP`);
+        return;
+      }
+
+      // 2) Odstęp: pierwszy rzut po zmianie ekranu — krótki cooldown;
+      //    kolejne — pełny grace (animacja + odpowiedź serwera).
+      const gap = (sess.throws === 0 && sess.unverifiedTries === 0)
+        ? jrand(cfg.cooldowns.throw)
+        : jrand(cfg.graceMs);
+      if (now - sess.lastThrow < gap) return;
 
       sess.lastThrow = now;
-      sess.throws += 1;
       const shiny = PG.actions.isShinyEncounter();
-      const ok = PG.actions.throwBall(shiny, sess.throws);
-      if (!ok) sm.set('NEEDS_REVIEW', 'brak piłki z konfiguracji (priorytety P1/P2 niedostępne)');
+      const thrown = PG.actions.throwBall(shiny, sess.throws + sess.unverifiedTries + 1);
+      if (!thrown) sm.set('NEEDS_REVIEW', 'brak piłki z konfiguracji (priorytety P1/P2 niedostępne)');
+      else sess.pendingThrow = thrown;
     });
 
     sm.register('BERRY', () => {

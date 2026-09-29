@@ -57,6 +57,7 @@ PG.actions = (() => {
 
   let bridgeSeq = 0;
   let lastBridgeFallback = 0;
+  let lastUndeliveredLog = 0;
 
   /**
    * Jedno miejsce klikania gry: CDP (trusted) → window.__pgClick;
@@ -68,6 +69,13 @@ PG.actions = (() => {
       try {
         const r = el.getBoundingClientRect();
         if (r.width > 0 && r.height > 0) {
+          // Poprzednie żądanie wciąż stoi po >4 s = driver go nie dostarczył.
+          const old = window.__pgClick;
+          if (old && old.ts && Date.now() - old.ts > 4000
+              && Date.now() - lastUndeliveredLog > 60000) {
+            lastUndeliveredLog = Date.now();
+            PG.logger.push('bridge_undelivered', { oldId: old.id, ageMs: Date.now() - old.ts });
+          }
           bridgeSeq += 1;
           const p = bridgePoint(r);
           window.__pgClick = { id: bridgeSeq, x: p.x, y: p.y, ts: Date.now() };
@@ -271,18 +279,19 @@ PG.actions = (() => {
       }
       noteAction();
       fire(b.el);
+      const thrown = { name, qty: b.qty };
       PG.logger.action('throw_ball', true, {
         name, chance: b.chance, qty: b.qty, shiny: !!shiny, attempt,
         pref,
       });
-      return true;
+      return thrown;
     }
     PG.logger.push('no_ball_available', {
       shiny: !!shiny,
       pref,
       available: balls.map((b) => ({ name: b.name, qty: b.qty, chance: b.chance })),
     });
-    return false;
+    return null;
   }
 
   /** Picie drinka (odnowa PA) — przycisk „Regeneracja punktów akcji". */
