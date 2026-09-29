@@ -7,7 +7,7 @@
  */
 
 const PG = {
-  version: '0.5.1',
+  version: '0.6.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -33,6 +33,7 @@ const PG = {
       heal: 1200,
       location: 1500,
       berry: 700,
+      teamHeal: 1500,
     },
 
     // przełączniki widoczne w panelu:
@@ -42,6 +43,7 @@ const PG = {
     autoSkipBattle: true,  // klikaj "Przejdź do końca walki"
     autoQuests: true,      // skan i rozliczanie questów
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
+    autoHealTeam: true,    // lecz HP pokemonów (< healHpBelow%) — ekran spotkania
     autoManage: false,     // ewolucja + sprzedaż — wymaga potwierdzenia UI
     autoResume: true,      // wznowienie działania po odświeżeniu strony
     questLocation: true,   // cel z questa WALK_IN steruje wyborem lokacji
@@ -57,6 +59,7 @@ const PG = {
     },
     maxThrows: 3,          // maks. rzutów w jednej potyczce (potem NEEDS_REVIEW)
     healBelow: 6,          // pij drinki, gdy PA < tej wartości (max koszt karty = 5)
+    healHpBelow: 50,       // lecz drużynę, gdy HP dowolnego mona < ten próg (%)
   },
 };
 

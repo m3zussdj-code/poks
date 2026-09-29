@@ -2,7 +2,7 @@
  * 70-main.js — start bota, pętla ticków, handlery stanów, persistencja.
  *
  * Detekcja ekranów (v3, oparta o snapshoty z /mapa):
- *   encounter  → ENCOUNTER (wybór drużyny)
+ *   encounter  → ENCOUNTER (leczenie HP < próg → wybór drużyny)
  *   ball_select→ CATCH     (rzut po wygranej)
  *   battle_result→ WANDER  (podsumowanie po walce → „Wędruj ponownie")
  *   battle     → BATTLE    (skip animacji)
@@ -24,7 +24,9 @@ PG.main = (() => {
     berryTries: 0,
     throws: 0,
     healTries: 0,
+    teamHealTries: 0,
     lastTeamClick: 0,
+    lastTeamHeal: 0,
     lastThrow: 0,
     lastSkip: 0,
     lastHeal: 0,
@@ -51,6 +53,7 @@ PG.main = (() => {
     sess.battleTries = 0;
     sess.berryTries = 0;
     sess.throws = 0;
+    sess.teamHealTries = 0;
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
 
@@ -229,6 +232,33 @@ PG.main = (() => {
         sm.set('SCANNING', `ekran spotkania zmienił się (${screen})`);
         return;
       }
+
+      // ── Leczenie < healHpBelow% HP — PRZED wyborem drużyny ─────────────
+      // Kolejność: „Ulecz wszystkie” → czekamy na wzrost HP (cooldown,
+      // kolejne ticki) → dopiero selekcja mona. Jeśli HP nie rośnie
+      // po 5 kliknięciach → NEEDS_REVIEW.
+      if (cfg.autoHealTeam) {
+        const low = PG.actions.teamLowHp(cfg.healHpBelow);
+        if (low.length) {
+          const nowH = Date.now();
+          if (nowH - sess.lastTeamHeal < jrand(cfg.cooldowns.teamHeal)) return; // czekamy na efekt
+          sess.lastTeamHeal = nowH;
+          sess.teamHealTries += 1;
+          if (sess.teamHealTries > 5) {
+            sm.set('NEEDS_REVIEW',
+              `leczenie nie podnosi HP (5 prób) — mon poniżej ${cfg.healHpBelow}%: ` +
+              low.map((t) => `${t.hp}/${t.max}`).join(', '));
+            return;
+          }
+          if (!PG.actions.healTeam()) {
+            sm.set('NEEDS_REVIEW', 'brak przycisku leczenia na ekranie spotkania');
+            return;
+          }
+          return; // kliknięte — nie wybieramy mona, aż HP się podniesie
+        }
+        sess.teamHealTries = 0; // HP OK → licznik prób zresetowany
+      }
+
       const now = Date.now();
       if (now - sess.lastTeamClick < jrand(cfg.cooldowns.team)) return;
       sess.lastTeamClick = now;

@@ -36,6 +36,7 @@ PG.panel = (() => {
     ['autoSkipBattle', 'Pomiń animację walki'],
     ['autoQuests', 'Questy'],
     ['autoHeal', 'Picie drinków'],
+    ['autoHealTeam', 'Leczenie HP (< próg)'],
     ['autoManage', 'Ewolucja/sprzedaż'],
     ['autoResume', 'Wznów po odświeżeniu'],
     ['questLocation', 'Cel z questa → lokacja'],
@@ -216,6 +217,9 @@ PG.panel = (() => {
               <label class="field">Jitter interwałów (%)
                 <input type="number" id="inJitter" min="0" max="80" step="5" />
               </label>
+              <label class="field">Lecz HP poniżej (%)
+                <input type="number" id="inHealHp" min="10" max="90" step="5" />
+              </label>
             </div>
           </div>
 
@@ -310,6 +314,10 @@ PG.panel = (() => {
       cfgSet('jitter', pct / 100, 'jitter');
       if (PG.main && typeof PG.main.restartLoop === 'function') PG.main.restartLoop();
     };
+    el('inHealHp').onchange = (e) => {
+      const pct = Math.max(10, Math.min(90, parseInt(e.target.value, 10) || 50));
+      cfgSet('healHpBelow', pct, 'healHpBelow');
+    };
   }
 
   /** Zapis wartości do konfiguracji + log (persistencja w main). */
@@ -372,6 +380,7 @@ PG.panel = (() => {
     el('inThrows').value = PG.config.maxThrows;
     el('inTick').value = PG.config.tickMs;
     el('inJitter').value = Math.round((PG.config.jitter || 0) * 100);
+    el('inHealHp').value = PG.config.healHpBelow;
   }
 
   /** Snapshot ekranu: co bot „widzi” — do diagnostyki nowych ekranów. */

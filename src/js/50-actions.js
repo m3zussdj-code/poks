@@ -107,6 +107,52 @@ PG.actions = (() => {
     }));
   }
 
+  /**
+   * Parser HP kafla drużyny — CZYSTY (bez DOM), testowany w tests/.
+   *
+   * Kafel ma trzy pary „N/M”: [0] poziom+EXP, [1] HP, [2] trzecia para.
+   * UWAGA: textContent bez spacji zlewa poziom z EXP („641082/1930"),
+   * dlatego HP = ZAWSZE druga para (`pairs[1]`) — zweryfikowane na
+   * 6 próbkach ze snapshotu (spacing i bez-spacing).
+   *
+   * @param {string} text  tekst kafla, np. „Lv. 64 1082/1930 x 3023/3205 x 100/100”
+   * @returns {{hp: number, max: number, ratio: number}|null} null, gdy pary < 2
+   */
+  function parseTeamHpText(text) {
+    const pairs = String(text).match(/\d+\s*\/\s*\d+/g);
+    if (!pairs || pairs.length < 2) return null;
+    const m = /(\d+)\s*\/\s*(\d+)/.exec(pairs[1]);
+    if (!m) return null;
+    const max = +m[2];
+    if (!max) return null; // HP 0/0 → nie umiemy orzec, pomijamy
+    const hp = +m[1];
+    return { hp, max, ratio: hp / max };
+  }
+
+  /**
+   * Kafle drużyny z odczytanym HP (razem z „Niezdolny…” — bez niego
+   * nie zobaczylibyśmy mona do wyleczenia). Wymaga team-selection.
+   * @returns {Array<{hp: number, max: number, ratio: number, raw: string}>}
+   */
+  function teamHpList() {
+    const cont = document.querySelector('[data-pokeglory-integrity-role="team-selection"]');
+    if (!cont) return [];
+    const out = [];
+    for (const b of cont.querySelectorAll('button')) {
+      const raw = pgText(b.textContent, 80);
+      if (!/Lv\./.test(raw)) continue; // nie-kafle (np. „Ulecz wszystkie”)
+      const parsed = parseTeamHpText(raw);
+      if (parsed) out.push({ ...parsed, raw });
+    }
+    return out;
+  }
+
+  /** Kafle z HP poniżej podanego progu (%). Fainted (0 HP) kwalifikuje się. */
+  function teamLowHp(belowPct) {
+    const pct = Number.isFinite(+belowPct) ? +belowPct : 50;
+    return teamHpList().filter((t) => t.ratio * 100 < pct);
+  }
+
   /** Karty lokacji „4 PA Mroczne Miasto" (widoczne też poza kokpitem). */
   function listLocations() {
     const out = [];
@@ -189,6 +235,32 @@ PG.actions = (() => {
     return ok;
   }
 
+  /**
+   * Leczenie drużyny — „Ulecz wszystkie” (preferowany widoczny element,
+   * bo w DOM bywa też ukryta kopia a11y) z fallbackiem na globalne
+   * „Leczenie wszystkich pokemonów”.
+   */
+  function healTeam() {
+    const cands = PG.selectors.resolveAll('team-heal-button');
+    const el = cands.find((x) => isVisible(x)) || cands[0];
+    if (!el) {
+      PG.logger.selectorMiss('team-heal-button');
+      PG.logger.action('team_heal', false, { reason: 'no_button' });
+      return false;
+    }
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') {
+      PG.logger.push('action_disabled', { name: 'team-heal-button' });
+      return false;
+    }
+    noteAction();
+    el.click();
+    PG.logger.action('team_heal', true, {
+      via: pgText(el.textContent, 40),
+      wasVisible: isVisible(el),
+    });
+    return true;
+  }
+
   /** Zebranie jagód z krzewu podczas wędrówki. */
   function collectBerries() {
     const ok = click('berry-button');
@@ -252,7 +324,9 @@ PG.actions = (() => {
     noteAction, sinceLastAction, click,
     parseAP, parseBalls, isShinyEncounter, ballCatalog,
     teamButtons, peekTeam, listLocations,
-    walkAgain, selectTeamMember, skipBattle, throwBall, heal, walkLocation,
+    parseTeamHpText, teamHpList, teamLowHp,
+    walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
+    walkLocation,
     collectBerries, openQuestTab, isVisible,
     // stuby do wypełnienia (ekwipunek, questy):
     evolveTeam: () => { PG.logger.action('evolve', false, { stub: true }); return false; },

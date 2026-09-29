@@ -28,7 +28,8 @@ function eq(actual, expected, msg) {
 
 // ── ładowanie modułów bota (te same pliki, co w build.sh) ───────────────────
 function loadPG() {
-  const files = ['00-namespace.js', '30-quest-parser.js'];
+  // 50-actions: ładujemy dla czystego parseTeamHpText (bez DOM w load time).
+  const files = ['00-namespace.js', '30-quest-parser.js', '50-actions.js'];
   const code = files
     .map((f) => fs.readFileSync(path.join(__dirname, '..', 'src', 'js', f), 'utf8'))
     .join('\n');
@@ -185,6 +186,26 @@ eq(sq.steps, { total: 5, done: 4, active: 5 }, ' kroki');
 assert(/^Nagrody 51x Power Drink/.test(sq.rewards), ' nagrody');
 assert(!/Nagrody -10%/.test(sq.rewards || ''), ' „Nagrody -10%” nie udaje nagród');
 eq(PG.quest.parseSidebarQuest('Brak tu żadnego celu.'), { active: false }, ' brak celu → active:false');
+
+// ── 7. parseTeamHpText() — HP kaflu = DRUGA para liczb (snapshot ekranu) ───
+// Kafel: „Lv. 64 1082/1930 x 3023/3205 x 100/100” → para[0]=poziom/EXP,
+// para[1]=HP, para[2]=trzecia para. textContent bez spacji zlewa
+// poziom z EXP („641082/1930”) — HP musi brać ZAWSZE indeks 1.
+console.log('7. parseTeamHpText() — druga para = HP (6 próbek snapshotu)');
+const hp = PG.actions.parseTeamHpText;
+eq(hp('Lv. 64 1082/1930 x 3023/3205 x 100/100'), { hp: 3023, max: 3205, ratio: 3023 / 3205 }, 'spacing: normalny');
+eq(hp('Lv. 641082/1930x3023/3205x100/100x'), { hp: 3023, max: 3205, ratio: 3023 / 3205 }, 'bez spacji (textContent)');
+eq(hp('Niezdolny Lv. 130 3910/3910 x 0/3050 x 100/100'), { hp: 0, max: 3050, ratio: 0 }, 'spacing: fainted');
+eq(hp('NiezdolnyLv. 1303910/3910x0/3050x100/100x'), { hp: 0, max: 3050, ratio: 0 }, 'bez spacji: fainted');
+eq(hp('Lv. 130 206/3910 x 1788/2233 x 48/100'), { hp: 1788, max: 2233, ratio: 1788 / 2233 }, 'spacing: 80% HP');
+eq(hp('Lv. 130206/3910x1788/2233x48/100x'), { hp: 1788, max: 2233, ratio: 1788 / 2233 }, 'bez spacji: 80% HP');
+eq(hp('Lv. 33 781/1000 x 1452/1452 x 100/100'), { hp: 1452, max: 1452, ratio: 1 }, 'spacing: pełne HP');
+eq(hp('Ulecz wszystkie'), null, ' tekst bez par → null');
+eq(hp('Lv. 64 1082/1930'), null, ' jedna para (bez HP) → null');
+// Próg <50%: kwalifikuje fainted (0/3050) i wszystko poniżej połowy:
+assert(hp('Niezdolny Lv. 130 3910/3910 x 0/3050 x 100/100').ratio * 100 < 50, ' 0/3050 < 50%');
+assert(!(hp('Lv. 130 206/3910 x 1788/2233 x 48/100').ratio * 100 < 50), ' 1788/2233 ≥ 50%');
+assert(!(hp('Lv. 64 1082/1930 x 3023/3205 x 100/100').ratio * 100 < 50), ' 3023/3205 ≥ 50%');
 
 // ── podsumowanie ────────────────────────────────────────────────────────────
 console.log(`\n${failures.length === 0 ? '✅' : '❌'} Wszystkie testy: ${passed} OK, ${failures.length} błędów`);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PokeGlory Edu Bot
 // @namespace    https://github.com/m3zussdj-code/poks
-// @version      0.5.1
+// @version      0.6.0
 // @description  Edukacyjny bot do gry PokeGlory: maszyna stanów, parser questów, panel sterowania i lokalna telemetria.
 // @match        https://pokeglory.pl/*
 // @match        https://*.pokeglory.pl/*
@@ -25,7 +25,7 @@
  */
 
 const PG = {
-  version: '0.5.1',
+  version: '0.6.0',
 
   /**
    * Konfiguracja bota. Panel steruje flagami auto* i pauseOnSpecial,
@@ -51,6 +51,7 @@ const PG = {
       heal: 1200,
       location: 1500,
       berry: 700,
+      teamHeal: 1500,
     },
 
     // przełączniki widoczne w panelu:
@@ -60,6 +61,7 @@ const PG = {
     autoSkipBattle: true,  // klikaj "Przejdź do końca walki"
     autoQuests: true,      // skan i rozliczanie questów
     autoHeal: true,        // picie drinków (odnowa punktów akcji)
+    autoHealTeam: true,    // lecz HP pokemonów (< healHpBelow%) — ekran spotkania
     autoManage: false,     // ewolucja + sprzedaż — wymaga potwierdzenia UI
     autoResume: true,      // wznowienie działania po odświeżeniu strony
     questLocation: true,   // cel z questa WALK_IN steruje wyborem lokacji
@@ -75,6 +77,7 @@ const PG = {
     },
     maxThrows: 3,          // maks. rzutów w jednej potyczce (potem NEEDS_REVIEW)
     healBelow: 6,          // pij drinki, gdy PA < tej wartości (max koszt karty = 5)
+    healHpBelow: 50,       // lecz drużynę, gdy HP dowolnego mona < ten próg (%)
   },
 };
 
@@ -297,6 +300,13 @@ PG.selectors = (() => {
     ],
     'team-selection': [
       '[data-pokeglory-integrity-role="team-selection"]',
+    ],
+    // Leczenie drużyny: kandydat 1 „Ulecz wszystkie” w panelu drużyny
+    // (bywa ukryta kopia w DOM — akcja preferuje widoczny element);
+    // kandydat 2 globalne „Leczenie wszystkich pokemonów” jako fallback.
+    'team-heal-button': [
+      { sel: 'button', re: /^Ulecz wszystkie$/ },
+      { sel: 'button', re: /Leczenie wszystkich pokemonów/ },
     ],
     'battle-skip-button': [
       { sel: 'button', re: /Przejdź do końca walki/ },
@@ -985,6 +995,52 @@ PG.actions = (() => {
     }));
   }
 
+  /**
+   * Parser HP kafla drużyny — CZYSTY (bez DOM), testowany w tests/.
+   *
+   * Kafel ma trzy pary „N/M”: [0] poziom+EXP, [1] HP, [2] trzecia para.
+   * UWAGA: textContent bez spacji zlewa poziom z EXP („641082/1930"),
+   * dlatego HP = ZAWSZE druga para (`pairs[1]`) — zweryfikowane na
+   * 6 próbkach ze snapshotu (spacing i bez-spacing).
+   *
+   * @param {string} text  tekst kafla, np. „Lv. 64 1082/1930 x 3023/3205 x 100/100”
+   * @returns {{hp: number, max: number, ratio: number}|null} null, gdy pary < 2
+   */
+  function parseTeamHpText(text) {
+    const pairs = String(text).match(/\d+\s*\/\s*\d+/g);
+    if (!pairs || pairs.length < 2) return null;
+    const m = /(\d+)\s*\/\s*(\d+)/.exec(pairs[1]);
+    if (!m) return null;
+    const max = +m[2];
+    if (!max) return null; // HP 0/0 → nie umiemy orzec, pomijamy
+    const hp = +m[1];
+    return { hp, max, ratio: hp / max };
+  }
+
+  /**
+   * Kafle drużyny z odczytanym HP (razem z „Niezdolny…” — bez niego
+   * nie zobaczylibyśmy mona do wyleczenia). Wymaga team-selection.
+   * @returns {Array<{hp: number, max: number, ratio: number, raw: string}>}
+   */
+  function teamHpList() {
+    const cont = document.querySelector('[data-pokeglory-integrity-role="team-selection"]');
+    if (!cont) return [];
+    const out = [];
+    for (const b of cont.querySelectorAll('button')) {
+      const raw = pgText(b.textContent, 80);
+      if (!/Lv\./.test(raw)) continue; // nie-kafle (np. „Ulecz wszystkie”)
+      const parsed = parseTeamHpText(raw);
+      if (parsed) out.push({ ...parsed, raw });
+    }
+    return out;
+  }
+
+  /** Kafle z HP poniżej podanego progu (%). Fainted (0 HP) kwalifikuje się. */
+  function teamLowHp(belowPct) {
+    const pct = Number.isFinite(+belowPct) ? +belowPct : 50;
+    return teamHpList().filter((t) => t.ratio * 100 < pct);
+  }
+
   /** Karty lokacji „4 PA Mroczne Miasto" (widoczne też poza kokpitem). */
   function listLocations() {
     const out = [];
@@ -1067,6 +1123,32 @@ PG.actions = (() => {
     return ok;
   }
 
+  /**
+   * Leczenie drużyny — „Ulecz wszystkie” (preferowany widoczny element,
+   * bo w DOM bywa też ukryta kopia a11y) z fallbackiem na globalne
+   * „Leczenie wszystkich pokemonów”.
+   */
+  function healTeam() {
+    const cands = PG.selectors.resolveAll('team-heal-button');
+    const el = cands.find((x) => isVisible(x)) || cands[0];
+    if (!el) {
+      PG.logger.selectorMiss('team-heal-button');
+      PG.logger.action('team_heal', false, { reason: 'no_button' });
+      return false;
+    }
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') {
+      PG.logger.push('action_disabled', { name: 'team-heal-button' });
+      return false;
+    }
+    noteAction();
+    el.click();
+    PG.logger.action('team_heal', true, {
+      via: pgText(el.textContent, 40),
+      wasVisible: isVisible(el),
+    });
+    return true;
+  }
+
   /** Zebranie jagód z krzewu podczas wędrówki. */
   function collectBerries() {
     const ok = click('berry-button');
@@ -1130,7 +1212,9 @@ PG.actions = (() => {
     noteAction, sinceLastAction, click,
     parseAP, parseBalls, isShinyEncounter, ballCatalog,
     teamButtons, peekTeam, listLocations,
-    walkAgain, selectTeamMember, skipBattle, throwBall, heal, walkLocation,
+    parseTeamHpText, teamHpList, teamLowHp,
+    walkAgain, selectTeamMember, skipBattle, throwBall, heal, healTeam,
+    walkLocation,
     collectBerries, openQuestTab, isVisible,
     // stuby do wypełnienia (ekwipunek, questy):
     evolveTeam: () => { PG.logger.action('evolve', false, { stub: true }); return false; },
@@ -1184,6 +1268,7 @@ PG.panel = (() => {
     ['autoSkipBattle', 'Pomiń animację walki'],
     ['autoQuests', 'Questy'],
     ['autoHeal', 'Picie drinków'],
+    ['autoHealTeam', 'Leczenie HP (< próg)'],
     ['autoManage', 'Ewolucja/sprzedaż'],
     ['autoResume', 'Wznów po odświeżeniu'],
     ['questLocation', 'Cel z questa → lokacja'],
@@ -1364,6 +1449,9 @@ PG.panel = (() => {
               <label class="field">Jitter interwałów (%)
                 <input type="number" id="inJitter" min="0" max="80" step="5" />
               </label>
+              <label class="field">Lecz HP poniżej (%)
+                <input type="number" id="inHealHp" min="10" max="90" step="5" />
+              </label>
             </div>
           </div>
 
@@ -1458,6 +1546,10 @@ PG.panel = (() => {
       cfgSet('jitter', pct / 100, 'jitter');
       if (PG.main && typeof PG.main.restartLoop === 'function') PG.main.restartLoop();
     };
+    el('inHealHp').onchange = (e) => {
+      const pct = Math.max(10, Math.min(90, parseInt(e.target.value, 10) || 50));
+      cfgSet('healHpBelow', pct, 'healHpBelow');
+    };
   }
 
   /** Zapis wartości do konfiguracji + log (persistencja w main). */
@@ -1520,6 +1612,7 @@ PG.panel = (() => {
     el('inThrows').value = PG.config.maxThrows;
     el('inTick').value = PG.config.tickMs;
     el('inJitter').value = Math.round((PG.config.jitter || 0) * 100);
+    el('inHealHp').value = PG.config.healHpBelow;
   }
 
   /** Snapshot ekranu: co bot „widzi” — do diagnostyki nowych ekranów. */
@@ -1704,7 +1797,7 @@ PG.panel = (() => {
  * 70-main.js — start bota, pętla ticków, handlery stanów, persistencja.
  *
  * Detekcja ekranów (v3, oparta o snapshoty z /mapa):
- *   encounter  → ENCOUNTER (wybór drużyny)
+ *   encounter  → ENCOUNTER (leczenie HP < próg → wybór drużyny)
  *   ball_select→ CATCH     (rzut po wygranej)
  *   battle_result→ WANDER  (podsumowanie po walce → „Wędruj ponownie")
  *   battle     → BATTLE    (skip animacji)
@@ -1726,7 +1819,9 @@ PG.main = (() => {
     berryTries: 0,
     throws: 0,
     healTries: 0,
+    teamHealTries: 0,
     lastTeamClick: 0,
+    lastTeamHeal: 0,
     lastThrow: 0,
     lastSkip: 0,
     lastHeal: 0,
@@ -1753,6 +1848,7 @@ PG.main = (() => {
     sess.battleTries = 0;
     sess.berryTries = 0;
     sess.throws = 0;
+    sess.teamHealTries = 0;
     // healTries NIE jest resetowany — resetuje go dopiero rosnący poziom PA.
   }
 
@@ -1931,6 +2027,33 @@ PG.main = (() => {
         sm.set('SCANNING', `ekran spotkania zmienił się (${screen})`);
         return;
       }
+
+      // ── Leczenie < healHpBelow% HP — PRZED wyborem drużyny ─────────────
+      // Kolejność: „Ulecz wszystkie” → czekamy na wzrost HP (cooldown,
+      // kolejne ticki) → dopiero selekcja mona. Jeśli HP nie rośnie
+      // po 5 kliknięciach → NEEDS_REVIEW.
+      if (cfg.autoHealTeam) {
+        const low = PG.actions.teamLowHp(cfg.healHpBelow);
+        if (low.length) {
+          const nowH = Date.now();
+          if (nowH - sess.lastTeamHeal < jrand(cfg.cooldowns.teamHeal)) return; // czekamy na efekt
+          sess.lastTeamHeal = nowH;
+          sess.teamHealTries += 1;
+          if (sess.teamHealTries > 5) {
+            sm.set('NEEDS_REVIEW',
+              `leczenie nie podnosi HP (5 prób) — mon poniżej ${cfg.healHpBelow}%: ` +
+              low.map((t) => `${t.hp}/${t.max}`).join(', '));
+            return;
+          }
+          if (!PG.actions.healTeam()) {
+            sm.set('NEEDS_REVIEW', 'brak przycisku leczenia na ekranie spotkania');
+            return;
+          }
+          return; // kliknięte — nie wybieramy mona, aż HP się podniesie
+        }
+        sess.teamHealTries = 0; // HP OK → licznik prób zresetowany
+      }
+
       const now = Date.now();
       if (now - sess.lastTeamClick < jrand(cfg.cooldowns.team)) return;
       sess.lastTeamClick = now;

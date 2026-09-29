@@ -53,6 +53,13 @@ PG.selectors = (() => {
     'team-selection': [
       '[data-pokeglory-integrity-role="team-selection"]',
     ],
+    // Leczenie drużyny: kandydat 1 „Ulecz wszystkie” w panelu drużyny
+    // (bywa ukryta kopia w DOM — akcja preferuje widoczny element);
+    // kandydat 2 globalne „Leczenie wszystkich pokemonów” jako fallback.
+    'team-heal-button': [
+      { sel: 'button', re: /^Ulecz wszystkie$/ },
+      { sel: 'button', re: /Leczenie wszystkich pokemonów/ },
+    ],
     'battle-skip-button': [
       { sel: 'button', re: /Przejdź do końca walki/ },
     ],
